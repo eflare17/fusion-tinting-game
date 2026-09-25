@@ -461,17 +461,22 @@
     if(now-lastSpraySound>90){lastSpraySound=now;playSpray();}
     pumpAnim=6;lastAimX=ax;lastAimY=ay;
   }
-  // Runs every animation frame during the spray step, so the mist and hose move smoothly
+  // Runs every animation frame while playing, so the tools and effects move smoothly
+  // (the 20-per-second ticker still runs the clock and the step logic)
   function sprayLoop(){
     sprayRaf=0;
     if(state!=='playing') return;
-    if(step!==0&&!mistParticles.length&&!dripParticles.length) return;
     if(step===0){
       if(!hosePoints.length) initHose();
       // the grip sits below-left of where you're aiming, so the wand points at the spot
       updateHose(bottleAimX-70,bottleAimY+95);
     }
-    sprayFrame();updateMist();updateDrips();draw();
+    if(step===2){
+      const e=filmDragging?0.5:0.22;
+      filmSX+=(filmX-filmSX)*e;filmSY+=(filmY-filmSY)*e;
+      if(filmReturning&&Math.hypot(filmX-filmSX,filmY-filmSY)<2) filmReturning=false;
+    }
+    sprayFrame();updateMist();updateDrips();updateSuds();updateSparkles();draw();
     sprayRaf=requestAnimationFrame(sprayLoop);
   }
 
@@ -642,13 +647,76 @@
   let filmDragging=false, filmPlaced=false, filmCoverage=0;
   let filmX=0, filmY=0, filmGrabOX=0, filmGrabOY=0;
   let filmW=0, filmH=0;
+  let filmSX=0, filmSY=0, filmReturning=false; // drawn position (eases after the target)
 
   function initFilm(){
     const b=polyBounds();
     filmW=b.maxX-b.minX;
     filmH=b.maxY-b.minY;
     const rp=rollPos();
-    filmX=rp.x; filmY=rp.y;
+    filmX=rp.x; filmY=rp.y; filmSX=filmX; filmSY=filmY; filmReturning=false;
+  }
+  // Press anywhere and drag: the film pulls off the roll and follows your drag
+  function filmPress(px,py){
+    if(filmPlaced) return;
+    filmDragging=true;filmReturning=false;
+    filmGrabOX=filmX-px;filmGrabOY=filmY-py;
+  }
+  function filmMove(px,py){
+    if(!filmDragging||filmPlaced) return;
+    filmX=px+filmGrabOX;filmY=py+filmGrabOY;
+  }
+  function filmRelease(){
+    if(!filmDragging||filmPlaced) return;
+    filmDragging=false;
+    filmCoverage=computeFilmCov();
+    if(filmCoverage>=0.82){
+      // snap it square onto the glass
+      filmPlaced=true;
+      const b=polyBounds();filmX=(b.minX+b.maxX)/2;filmY=(b.minY+b.maxY)/2;
+      playFilmPlace();advanceStep();
+    } else {
+      float(`${Math.round(filmCoverage*100)}% — line it up with the window!`,'#e25555');
+      const rp=rollPos();filmX=rp.x;filmY=rp.y;filmReturning=true;
+    }
+  }
+  function drawFilmSheet(pts,lifted){
+    const xs=pts.map(p=>p[0]),ys=pts.map(p=>p[1]);
+    const x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys);
+    ctx.save();
+    if(lifted){ctx.shadowColor='rgba(0,0,0,0.45)';ctx.shadowBlur=18;ctx.shadowOffsetY=8;}
+    drawPolyPath(pts);ctx.fillStyle='rgba(8,16,30,0.78)';ctx.fill();
+    ctx.shadowColor='transparent';
+    const g=ctx.createLinearGradient(x0,y0,x1,y1);
+    g.addColorStop(0,'rgba(255,255,255,0)');g.addColorStop(0.38,'rgba(255,255,255,0.13)');
+    g.addColorStop(0.46,'rgba(255,255,255,0.03)');g.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.fillStyle=g;ctx.fill();
+    ctx.strokeStyle='rgba(210,225,240,0.55)';ctx.lineWidth=1.2;ctx.stroke();
+    ctx.restore();
+  }
+  function drawRoll(rp){
+    const h=filmH*0.95,w=22,x=rp.x-w/2,y=rp.y-h/2;
+    const pulse=0.5+0.5*Math.sin(performance.now()*0.005);
+    ctx.save();
+    ctx.shadowColor='rgba(255,106,0,0.8)';ctx.shadowBlur=10+pulse*14;
+    const g=ctx.createLinearGradient(x,0,x+w,0);
+    g.addColorStop(0,'#15191f');g.addColorStop(0.45,'#4a5360');g.addColorStop(1,'#101318');
+    ctx.fillStyle=g;ctx.beginPath();ctx.roundRect(x,y,w,h,6);ctx.fill();
+    ctx.shadowBlur=0;
+    // end caps + core
+    ctx.fillStyle='#2a3038';
+    ctx.beginPath();ctx.ellipse(rp.x,y+2,w/2,4,0,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#ff6a00';ctx.beginPath();ctx.ellipse(rp.x,y+2,4,1.8,0,0,Math.PI*2);ctx.fill();
+    // film tail peeling off the roll
+    ctx.fillStyle='rgba(12,20,32,0.7)';ctx.beginPath();
+    ctx.moveTo(x+w-2,y+6);ctx.lineTo(x+w+14,y+10);ctx.lineTo(x+w+14,y+h-10);ctx.lineTo(x+w-2,y+h-6);ctx.closePath();ctx.fill();
+    ctx.strokeStyle='rgba(210,225,240,0.5)';ctx.lineWidth=1;ctx.stroke();
+    // drag hint
+    const bx=x+w+22+pulse*8;
+    ctx.fillStyle='rgba(255,106,0,0.95)';ctx.font="bold 18px 'DM Mono',monospace";
+    ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText('→',bx,rp.y);
+    ctx.font="bold 11px 'DM Mono',monospace";ctx.fillText('DRAG',x+w+20,rp.y-18);
+    ctx.restore();
   }
 
   function rollPos(){
@@ -778,18 +846,170 @@
         spongeWinCells.add(Math.floor(py/SPONGE_CELL)*3000+Math.floor(px/SPONGE_CELL));
     }
   }
-  function spongeAt(cx,cy){
-    const R=1,col=Math.floor(cx/SPONGE_CELL),row=Math.floor(cy/SPONGE_CELL);
-    for(let dr=-R;dr<=R;dr++) for(let dc=-R;dc<=R;dc++){
-      if(dc*dc+dr*dr>R*R+1) continue;
-      const id=(row+dr)*3000+(col+dc);
-      if(spongeWinCells.has(id)) spongeCells.add(id);
+  // ── Cleaning ──
+  // Real grime (dust, smudges, fingerprints, bug splats, water spots) sits on its own
+  // layer and the sponge wipes it away. The cell grid still decides the "% clean".
+  const SPONGE_RX=34, SPONGE_RY=19, SPONGE_LIFT=40;
+  let dirtC=null, sudsC=null, suds=[], sparkles=[], spongeAng=0;
+  const spongeSprite=(()=>{
+    const w=76,h=44,c=document.createElement('canvas');c.width=w;c.height=h;
+    const x=c.getContext('2d');
+    // yellow sponge
+    let g=x.createLinearGradient(0,10,0,h);g.addColorStop(0,'#ffd257');g.addColorStop(1,'#e8a72a');
+    x.fillStyle=g;x.beginPath();x.roundRect(2,9,w-4,h-11,9);x.fill();
+    // pores
+    for(let i=0;i<60;i++){
+      const px=6+Math.random()*(w-12),py=15+Math.random()*(h-21),r=0.8+Math.random()*2.2;
+      x.fillStyle=`rgba(150,95,10,${0.25+Math.random()*0.3})`;
+      x.beginPath();x.ellipse(px,py,r,r*0.75,Math.random()*3,0,Math.PI*2);x.fill();
+    }
+    // green scourer on top
+    g=x.createLinearGradient(0,2,0,13);g.addColorStop(0,'#3fae5a');g.addColorStop(1,'#23803c');
+    x.fillStyle=g;x.beginPath();x.roundRect(2,2,w-4,12,[8,8,2,2]);x.fill();
+    x.strokeStyle='rgba(255,255,255,0.18)';x.lineWidth=1;
+    for(let i=0;i<14;i++){x.beginPath();x.moveTo(6+i*5,4);x.lineTo(10+i*5,12);x.stroke();}
+    x.strokeStyle='rgba(120,70,0,0.45)';x.lineWidth=1.5;x.beginPath();x.roundRect(2,2,w-4,h-4,9);x.stroke();
+    return c;
+  })();
+  function polyPathOn(c,pts){
+    c.beginPath();c.moveTo(pts[0][0],pts[0][1]);
+    for(let i=1;i<pts.length;i++) c.lineTo(pts[i][0],pts[i][1]);
+    c.closePath();
+  }
+  function buildDirt(){
+    dirtC=document.createElement('canvas');dirtC.width=W;dirtC.height=H;
+    sudsC=document.createElement('canvas');sudsC.width=W;sudsC.height=H;
+    suds=[];
+    const c=dirtC.getContext('2d'),b=polyBounds(),bw=b.maxX-b.minX,bh=b.maxY-b.minY,k=bw/300;
+    const rx=()=>b.minX+Math.random()*bw, ry=()=>b.minY+Math.random()*bh;
+    c.save();polyPathOn(c,scaledPoly());c.clip();
+    // road-film haze, heavier towards the bottom of the glass
+    let g=c.createLinearGradient(0,b.minY,0,b.maxY);
+    g.addColorStop(0,'rgba(150,132,98,0.16)');g.addColorStop(1,'rgba(128,108,76,0.30)');
+    c.fillStyle=g;c.fillRect(b.minX,b.minY,bw,bh);
+    // soft smudges
+    for(let i=0;i<7;i++){
+      const x=rx(),y=ry(),r=(25+Math.random()*45)*k;
+      c.save();c.translate(x,y);c.rotate(Math.random()*3);c.scale(1,0.5+Math.random()*0.4);
+      g=c.createRadialGradient(0,0,0,0,0,r);g.addColorStop(0,'rgba(115,98,70,0.28)');g.addColorStop(1,'rgba(115,98,70,0)');
+      c.fillStyle=g;c.beginPath();c.arc(0,0,r,0,Math.PI*2);c.fill();c.restore();
+    }
+    // dust specks
+    const n=Math.round(bw*bh/55);
+    for(let i=0;i<n;i++){
+      const t=Math.random();
+      c.fillStyle=`rgba(${80+t*70|0},${70+t*60|0},${52+t*45|0},${0.18+Math.random()*0.4})`;
+      const sz=0.6+Math.random()*1.4;c.fillRect(rx(),ry(),sz,sz);
+    }
+    // fingerprints
+    for(let f=0;f<3;f++){
+      const x=rx(),y=ry(),r=11*k+4;
+      c.save();c.translate(x,y);c.rotate(Math.random()*3);
+      c.strokeStyle='rgba(90,78,58,0.30)';c.lineWidth=1.1;
+      for(let i=1;i<=7;i++){c.beginPath();c.ellipse(0,0,r*i/7,r*1.35*i/7,0,0.3,Math.PI*2-0.2);c.stroke();}
+      c.restore();
+    }
+    // water spots
+    for(let i=0;i<14;i++){
+      const x=rx(),y=ry(),r=(2+Math.random()*6)*k+1;
+      c.fillStyle='rgba(205,198,178,0.18)';c.beginPath();c.arc(x,y,r,0,Math.PI*2);c.fill();
+      c.strokeStyle='rgba(240,236,222,0.45)';c.lineWidth=1;c.stroke();
+    }
+    // bug splats
+    for(let i=0;i<3;i++){
+      const x=rx(),y=ry(),r=(3+Math.random()*3)*k+2;
+      c.fillStyle='rgba(175,165,70,0.35)';
+      c.beginPath();c.ellipse(x+r*0.6,y+r*0.3,r*2.4,r*1.2,Math.random(),0,Math.PI*2);c.fill();
+      c.fillStyle='rgba(55,50,28,0.8)';c.beginPath();
+      for(let j=0;j<=10;j++){const a=j/10*Math.PI*2,rr=r*(0.6+Math.random()*0.6);
+        j?c.lineTo(x+Math.cos(a)*rr,y+Math.sin(a)*rr):c.moveTo(x+Math.cos(a)*rr,y+Math.sin(a)*rr);}
+      c.fill();
+      for(let j=0;j<7;j++){const a=Math.random()*6.3,d=r*(1.5+Math.random()*2.5);
+        c.beginPath();c.arc(x+Math.cos(a)*d,y+Math.sin(a)*d,0.6+Math.random()*1.4,0,Math.PI*2);c.fill();}
+    }
+    c.restore();
+  }
+  // One wipe of the sponge at (x,y)
+  function scrubAt(x,y){
+    const ca=Math.cos(spongeAng),sa=Math.sin(spongeAng);
+    const RX=SPONGE_RX*0.95,RY=SPONGE_RY*0.95;
+    const c0=Math.floor((x-RX)/SPONGE_CELL),c1=Math.floor((x+RX)/SPONGE_CELL);
+    const r0=Math.floor((y-RX)/SPONGE_CELL),r1=Math.floor((y+RX)/SPONGE_CELL);
+    for(let row=r0;row<=r1;row++) for(let col=c0;col<=c1;col++){
+      const dx=col*SPONGE_CELL+SPONGE_CELL/2-x,dy=row*SPONGE_CELL+SPONGE_CELL/2-y;
+      const u=dx*ca+dy*sa,v=-dx*sa+dy*ca;
+      if(u*u/(RX*RX)+v*v/(RY*RY)<=1){const id=row*3000+col;if(spongeWinCells.has(id)) spongeCells.add(id);}
+    }
+    const wipe=(cv)=>{
+      if(!cv) return;
+      const c=cv.getContext('2d');
+      c.save();c.globalCompositeOperation='destination-out';
+      c.translate(x,y);c.rotate(spongeAng);c.scale(1,SPONGE_RY/SPONGE_RX);
+      const g=c.createRadialGradient(0,0,0,0,0,SPONGE_RX*1.12);
+      g.addColorStop(0,'rgba(0,0,0,1)');g.addColorStop(0.72,'rgba(0,0,0,0.95)');g.addColorStop(1,'rgba(0,0,0,0)');
+      c.fillStyle=g;c.beginPath();c.arc(0,0,SPONGE_RX*1.12,0,Math.PI*2);c.fill();c.restore();
+    };
+    wipe(dirtC);wipe(dropC);
+  }
+  function spongeMove(px,py){
+    const dx=px-spongeX,dy=py-spongeY,dist=Math.hypot(dx,dy);
+    spongeVX=dx;spongeVY=dy;spongeSpeed=dist;
+    // lean into the direction you're scrubbing
+    const target=Math.max(-0.45,Math.min(0.45,dx*0.02));
+    spongeAng+=(target-spongeAng)*0.35;
+    if(spongeDown){
+      const steps=Math.max(1,Math.ceil(dist/6));
+      for(let i=1;i<=steps;i++) scrubAt(spongeX+dx*i/steps,spongeY+dy*i/steps);
+      if(sudsC&&dist>0.5){
+        const c=sudsC.getContext('2d');
+        c.strokeStyle='rgba(255,255,255,0.16)';c.lineWidth=SPONGE_RY*1.6;c.lineCap='round';
+        c.beginPath();c.moveTo(spongeX,spongeY);c.lineTo(px,py);c.stroke();
+      }
+      const nb=Math.min(6,1+Math.floor(dist/5));
+      for(let i=0;i<nb;i++){
+        const a=Math.random()*Math.PI*2;
+        suds.push({x:px-dx*0.6+Math.cos(a)*SPONGE_RX*0.9*Math.random(),y:py-dy*0.6+Math.sin(a)*SPONGE_RY*1.1*Math.random(),
+          r:1.2+Math.random()*3.8,life:1,decay:0.008+Math.random()*0.012});
+      }
+      if(suds.length>350) suds.splice(0,suds.length-350);
+      const now=performance.now();
+      if(dist>2&&now-lastSpongeSound>140){lastSpongeSound=now;playSponge();}
+    }
+    spongeX=px;spongeY=py;spongeVis=true;
+    if(spongeDown&&getSpongeCov()>=0.97&&!advancing) advanceStep();
+  }
+  function updateSuds(){
+    for(const b of suds) b.life-=b.decay;
+    suds=suds.filter(b=>b.life>0);
+    if(sudsC){const c=sudsC.getContext('2d');c.save();c.globalCompositeOperation='destination-out';
+      c.fillStyle='rgba(0,0,0,0.02)';c.fillRect(0,0,W,H);c.restore();}
+  }
+  // Little four-point glints, used when a step is finished
+  function sparkleBurst(n){
+    const poly=scaledPoly(),b=polyBounds();
+    for(let i=0,tries=0;i<n&&tries<n*20;tries++){
+      const x=b.minX+Math.random()*(b.maxX-b.minX),y=b.minY+Math.random()*(b.maxY-b.minY);
+      if(!ptInWinPoly(x,y)) continue;
+      sparkles.push({x,y,t:-Math.floor(Math.random()*18),dur:26+Math.random()*14,r:6+Math.random()*9});i++;
+    }
+  }
+  function updateSparkles(){for(const s of sparkles)s.t++;sparkles=sparkles.filter(s=>s.t<s.dur);}
+  function drawSparkles(){
+    for(const s of sparkles){
+      if(s.t<0) continue;
+      const k=s.t/s.dur,sc=Math.sin(k*Math.PI),r=s.r*sc;
+      ctx.save();ctx.translate(s.x,s.y);ctx.rotate(k*1.2);ctx.globalAlpha=sc;
+      ctx.fillStyle='#fff';ctx.shadowColor='rgba(255,255,255,0.9)';ctx.shadowBlur=8;
+      ctx.beginPath();
+      for(let i=0;i<8;i++){const a=i*Math.PI/4,rr=i%2?r*0.18:r;ctx.lineTo(Math.cos(a)*rr,Math.sin(a)*rr);}
+      ctx.closePath();ctx.fill();ctx.restore();
     }
   }
   function getSpongeCov(){
     if(!spongeWinCells.size) return 0;
     return spongeCells.size/spongeWinCells.size;
   }
+
   // Scrape step vars
   let bubbles = [];
   let lastScrapeAng = 0;
@@ -819,6 +1039,8 @@
   // ── STEP 2: CUT ──
   // Simple: track mouse X position across window width, knife shown on top edge
   let cutProgress=0, cutStarted=false, knifeX=0, knifeY=0, knifeVis=false, knifeDragging=false;
+  let knifeAng=0, knifeHoverX=0, knifeHoverY=0, lastKnifeSound=0;
+  const CUT_LIFT=30, CUT_BAND=16;
 
   function getTopPath(){
     // Returns all points along the top of the window polygon, sorted left to right
@@ -833,10 +1055,10 @@
   function spawnFilmStrip(){
     const pts = getTopPath();
     if(pts.length < 2) return;
-    const STRIP_H = 20;
+    const STRIP_H = CUT_BAND;
     // Store original shape + shared fall physics (whole strip moves together)
     filmStrip = {
-      pts: pts.map(([x,y]) => ({ox:x, oy:y})), // original positions
+      pts: pts.map(([x,y]) => ({ox:x, oy:y-CUT_BAND})), // the trimmed-off excess above the edge
       x: 0, y: 0,           // shared translation
       vx: (Math.random()-0.5)*1.5,
       vy: -3,               // initial upward pop
@@ -901,9 +1123,9 @@
     for(let i=screen.length-1;i>=0;i--) ctx.lineTo(screen[i].bx, screen[i].by);
     ctx.closePath();
     const grad = ctx.createLinearGradient(screen[0].tx, screen[0].ty, screen[screen.length-1].tx, screen[screen.length-1].ty);
-    grad.addColorStop(0, 'rgba(10,25,60,0.9)');
-    grad.addColorStop(0.5, 'rgba(30,60,130,0.8)');
-    grad.addColorStop(1, 'rgba(10,25,60,0.9)');
+    grad.addColorStop(0, 'rgba(8,16,30,0.85)');
+    grad.addColorStop(0.5, 'rgba(40,55,75,0.8)');
+    grad.addColorStop(1, 'rgba(8,16,30,0.85)');
     ctx.fillStyle = grad;
     ctx.fill();
 
@@ -926,72 +1148,73 @@
     ctx.restore();
   }
 
-  function updateCut(mx,my){
-    const pts=getTopPath();
-    if(pts.length<2) return;
-    // Find total path length
-    let totalLen=0;
-    const segs=[];
+  // Path helpers for the top edge of the window
+  function topSegs(){
+    const pts=getTopPath(),segs=[];let total=0;
     for(let i=0;i<pts.length-1;i++){
-      const dx=pts[i+1][0]-pts[i][0],dy=pts[i+1][1]-pts[i][1];
-      const l=Math.sqrt(dx*dx+dy*dy);
-      segs.push({dx,dy,l,x0:pts[i][0],y0:pts[i][1]});
-      totalLen+=l;
+      const dx=pts[i+1][0]-pts[i][0],dy=pts[i+1][1]-pts[i][1],l=Math.hypot(dx,dy);
+      segs.push({dx,dy,l,x0:pts[i][0],y0:pts[i][1],start:total});total+=l;
     }
-    // Place knife AT the mouse position, snapped to nearest point on path
-    // But only advance (never go back)
-    let cumLen=0;
-    let closestT=cutProgress, closestX=knifeX||pts[0][0], closestY=knifeY||pts[0][1], closestDist=1e9;
-    for(let i=0;i<segs.length;i++){
-      const s=segs[i];
-      const t=Math.max(0,Math.min(1,((mx-s.x0)*s.dx+(my-s.y0)*s.dy)/(s.l*s.l)));
-      const px=s.x0+t*s.dx, py=s.y0+t*s.dy;
-      const dist=Math.sqrt((mx-px)**2+(my-py)**2);
-      const gt=(cumLen+t*s.l)/totalLen;
-      if(dist<closestDist){
-        closestDist=dist;
-        closestT=gt;
-        closestX=px; closestY=py;
-      }
-      cumLen+=s.l;
-    }
-    // Always snap knife to mouse-projected position, advance progress
-    knifeX=closestX; knifeY=closestY;
-    if(closestT>cutProgress) cutProgress=closestT;
+    return {segs,total};
   }
-
-  function drawKnife(x,y,angle){
-    // Offset so the blade TIP is at x,y but the whole tool is above/left of finger
+  function pathAt(t){
+    const {segs,total}=topSegs();if(!segs.length) return {x:0,y:0,ang:0};
+    let d=Math.max(0,Math.min(1,t))*total;
+    for(const s of segs){
+      if(d<=s.start+s.l||s===segs[segs.length-1]){
+        const u=Math.max(0,Math.min(1,(d-s.start)/s.l));
+        return {x:s.x0+s.dx*u,y:s.y0+s.dy*u,ang:Math.atan2(s.dy,s.dx)};
+      }
+    }
+  }
+  // The knife only cuts while held, and only along the edge from where the cut has got to
+  function updateCut(mx,my){
+    const {segs,total}=topSegs();if(!segs.length) return;
+    let bestT=0,bestD=1e9;
+    for(const s of segs){
+      const u=Math.max(0,Math.min(1,((mx-s.x0)*s.dx+(my-s.y0)*s.dy)/(s.l*s.l)));
+      const d=Math.hypot(mx-(s.x0+u*s.dx),my-(s.y0+u*s.dy));
+      if(d<bestD){bestD=d;bestT=(s.start+u*s.l)/total;}
+    }
+    cutOffPath=bestD>55;
+    if(!cutOffPath&&bestT>cutProgress&&bestT-cutProgress<0.14){
+      const now=performance.now();
+      if(now-lastKnifeSound>110){lastKnifeSound=now;playKnife();}
+      cutProgress=bestT;
+    }
+    const h=pathAt(cutProgress);knifeX=h.x;knifeY=h.y;knifeAng=h.ang;
+  }
+  function cutMove(px,py){
+    knifeVis=true;knifeHoverX=px;knifeHoverY=py;
+    if(!knifeDragging) return;
+    updateCut(px,py);
+    if(cutProgress>=0.97&&!advancing){
+      cutProgress=1;cutsDone=true;bakeTint(true);spawnFilmStrip();playFilmFall();advanceStep();
+    }
+  }
+  function drawKnife(x,y,angle,pressed){
     ctx.save();
     ctx.translate(x,y);
-    ctx.rotate(angle);
-    // Shift the drawing UP so tip (bottom of blade) is at the origin
-    // Blade tip at (0,0), handle goes upward
-    const offset=-65; // shift handle up above finger
-    // Handle
-    ctx.fillStyle='#ff6a00';
-    ctx.beginPath();ctx.roundRect(-4,offset,8,22,3);ctx.fill();
-    ctx.strokeStyle='#c8a040';ctx.lineWidth=1;ctx.stroke();
-    // Grip lines
-    for(let i=0;i<3;i++){
-      ctx.beginPath();ctx.moveTo(-3,offset+5+i*6);ctx.lineTo(3,offset+5+i*6);
-      ctx.strokeStyle='rgba(0,0,0,0.2)';ctx.lineWidth=1;ctx.stroke();
-    }
-    // Blade body
-    ctx.fillStyle='#d0d8e0';
-    ctx.beginPath();
-    ctx.moveTo(-2.5,offset+20);
-    ctx.lineTo(2.5,offset+20);
-    ctx.lineTo(1.5,0);   // tip at origin
-    ctx.lineTo(-1.5,0);
-    ctx.closePath();
-    ctx.fill();
-    ctx.strokeStyle='#a0b0c0';ctx.lineWidth=0.5;ctx.stroke();
-    // Blade highlight
-    ctx.strokeStyle='rgba(255,255,255,0.8)';ctx.lineWidth=0.8;
-    ctx.beginPath();ctx.moveTo(1,offset+22);ctx.lineTo(0.5,-1);ctx.stroke();
+    // knife leans back from the direction of the cut, handle up and away from the finger
+    ctx.rotate(angle-2.2);
+    ctx.shadowColor='rgba(0,0,0,0.45)';ctx.shadowBlur=pressed?5:12;ctx.shadowOffsetY=pressed?2:6;
+    // snap-off blade
+    ctx.fillStyle='#dfe5ea';
+    ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(26,-6);ctx.lineTo(26,5);ctx.lineTo(8,5);ctx.closePath();ctx.fill();
+    ctx.shadowColor='transparent';
+    ctx.strokeStyle='rgba(120,135,150,0.9)';ctx.lineWidth=0.8;
+    for(let i=1;i<4;i++){ctx.beginPath();ctx.moveTo(6+i*5,-2+(i*-1));ctx.lineTo(11+i*5,5);ctx.stroke();}
+    ctx.strokeStyle='rgba(255,255,255,0.9)';ctx.beginPath();ctx.moveTo(1,-0.5);ctx.lineTo(26,-6);ctx.stroke();
+    // handle
+    const g=ctx.createLinearGradient(0,-9,0,9);g.addColorStop(0,'#ff8a2a');g.addColorStop(1,'#d65200');
+    ctx.fillStyle=g;ctx.beginPath();ctx.roundRect(24,-9,58,18,6);ctx.fill();
+    ctx.fillStyle='#2a2a33';ctx.beginPath();ctx.roundRect(38,-9,30,18,4);ctx.fill();
+    ctx.fillStyle='rgba(255,255,255,0.12)';
+    for(let i=0;i<6;i++){ctx.fillRect(41+i*4.5,-7,2,14);}
+    ctx.fillStyle='#bfc6cc';ctx.beginPath();ctx.roundRect(28,-11,8,5,2);ctx.fill();
     ctx.restore();
   }
+
 
   function spawnBubbles(){
     const b=polyBounds();
@@ -1019,7 +1242,7 @@
       tx.moveTo(poly[0][0], poly[0][1]);
       for(let i=1;i<poly.length;i++) tx.lineTo(poly[i][0],poly[i][1]);
       tx.closePath();
-      tx.fillStyle = 'rgba(4,14,32,0.93)';
+      tx.fillStyle = 'rgba(8,16,30,0.82)';
       tx.fill();
     } else {
       const topPts = getTopPath();
@@ -1037,7 +1260,7 @@
       const bottomPts = byY.slice(0,3).sort((a,b)=>b[0]-a[0]);
       bottomPts.forEach(([x,y])=>tx.lineTo(x,y));
       tx.closePath();
-      tx.fillStyle = 'rgba(4,14,32,0.93)';
+      tx.fillStyle = 'rgba(8,16,30,0.82)';
       tx.fill();
     }
   }
@@ -1051,21 +1274,21 @@
   function advanceStep(){
     if(advancing) return;advancing=true;
     if(step===0){
-      float('Sprayed! ✓','#00c4f0');mistParticles=[];
+      float('Sprayed! ✓','#00c4f0');mistParticles=[];sprayHeld=false;
       setTimeout(()=>{
-        step=1;spongeCells=new Set();buildSpongeWinCells();
-        spongeVis=true;
+        step=1;spongeCells=new Set();buildSpongeWinCells();buildDirt();
+        spongeVis=true;spongeAng=0;
         const sb=polyBounds();
         spongeX=(sb.minX+sb.maxX)/2;spongeY=(sb.minY+sb.maxY)/2;
         advancing=false;hud();
       },400);
     } else if(step===1){
-      float('Clean! ✓','#ff6a00');
+      float('Clean! ✓','#ff6a00');sparkleBurst(22);suds=[];
       setTimeout(()=>{step=2;filmPlaced=false;filmDragging=false;initFilm();advancing=false;hud();},400);
     } else if(step===2){
       const pts=Math.round(filmCoverage*200);score+=pts;
       float(`+${pts} pts`,'#ff6a00');bakeTint();
-      setTimeout(()=>{step=3;cutProgress=0;cutStarted=false;cutOffPath=false;cutsDone=false;advancing=false;hud();},400);
+      setTimeout(()=>{step=3;cutProgress=0;cutStarted=false;cutOffPath=false;cutsDone=false;knifeDragging=false;knifeHoverX=0;advancing=false;hud();},400);
     } else if(step===3){
       score+=150;float('+150 pts','#ff6a00');
       setTimeout(()=>{
@@ -1287,35 +1510,31 @@
       const b=polyBounds();
       const cov=getSpongeCov();
 
-      // Draw cleaned cells with soapy blue tint
-      ctx.save();
-      drawPolyPath(scaledPoly());ctx.clip();
-      // First fill whole window with "dirty" tint
-      ctx.fillStyle='rgba(160,140,100,0.30)';
-      ctx.fillRect(b.minX,b.minY,b.maxX-b.minX,b.maxY-b.minY);
-      // Cleaned areas shown as bright blue soapy film
-      spongeCells.forEach(id=>{
-        const row=Math.floor(id/3000),col=id%3000;
-        // Bright soapy blue
-        ctx.fillStyle='rgba(100,190,255,0.45)';
-        ctx.fillRect(col*SPONGE_CELL,row*SPONGE_CELL,SPONGE_CELL,SPONGE_CELL);
-        // Shimmer highlight on each cell
-        ctx.fillStyle='rgba(255,255,255,0.15)';
-        ctx.fillRect(col*SPONGE_CELL,row*SPONGE_CELL,SPONGE_CELL,SPONGE_CELL/3);
-      });
+      // Wet glass, grime on top, soapy streaks and suds where the sponge has been
+      ctx.save();drawPolyPath(scaledPoly());ctx.clip();
+      if(wetC){ctx.globalAlpha=0.6;ctx.imageSmoothingEnabled=true;ctx.drawImage(wetC,0,0,wetW*WS,wetH*WS);ctx.globalAlpha=1;ctx.drawImage(dropC,0,0);}
+      if(dirtC) ctx.drawImage(dirtC,0,0);
+      if(sudsC) ctx.drawImage(sudsC,0,0);
+      for(const s of suds){
+        ctx.globalAlpha=Math.min(1,s.life*1.4)*0.85;
+        ctx.fillStyle='rgba(255,255,255,0.55)';ctx.beginPath();ctx.arc(s.x,s.y,s.r,0,Math.PI*2);ctx.fill();
+        ctx.strokeStyle='rgba(170,200,230,0.8)';ctx.lineWidth=0.8;ctx.stroke();
+        ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(s.x-s.r*0.35,s.y-s.r*0.35,s.r*0.3,0,Math.PI*2);ctx.fill();
+      }
+      ctx.globalAlpha=1;
       ctx.restore();
 
       // Coverage % shown on window
       ctx.save();
       ctx.fillStyle='rgba(0,0,0,0.7)';
       ctx.beginPath();ctx.roundRect(b.minX+8,b.maxY+4,150,32,8);ctx.fill();
-      ctx.fillStyle=cov>=1.0?'#ff6a00':cov>=0.85?'#00c4f0':'#e8e4d9';
+      ctx.fillStyle=cov>=0.97?'#ff6a00':cov>=0.85?'#00c4f0':'#e8e4d9';
       ctx.font="bold 18px 'DM Mono',monospace";
       ctx.textAlign='left';ctx.textBaseline='middle';
       ctx.fillText(Math.round(cov*100)+'% clean',b.minX+16,b.maxY+20);
       ctx.restore();
       // Skip button at bottom centre
-      if(cov>=0.85&&cov<1.0&&!advancing){
+      if(cov>=0.85&&cov<0.97&&!advancing){
         const btnW=180,btnH=42,btnX=(W-btnW)/2,btnY=H-100;
         ctx.save();
         ctx.shadowColor='rgba(240,160,60,0.5)';ctx.shadowBlur=12;
@@ -1329,13 +1548,6 @@
         ctx.restore();
         window._spongeSkipBtn={x:btnX,y:btnY,w:btnW,h:btnH};
       } else { window._spongeSkipBtn=null; }
-
-      // Coverage bar inside window outline
-      const barW=b.maxX-b.minX-20;
-      ctx.fillStyle='rgba(0,0,0,0.3)';
-      ctx.beginPath();ctx.roundRect(b.minX+10,b.maxY-22,barW,10,5);ctx.fill();
-      ctx.fillStyle='#ff6a00';
-      ctx.beginPath();ctx.roundRect(b.minX+10,b.maxY-22,barW*cov,10,5);ctx.fill();
 
       // (sponge drawn at end of draw() to stay on top)
 
@@ -1351,73 +1563,33 @@
     }
 
     if(state==='playing'&&step===2){
-      const rp=rollPos();
-      if(!filmPlaced&&false){
-        const pulse=0.5+0.5*Math.sin(Date.now()*0.004);
-        const rh=filmH;
-        ctx.save();
-        // Glow
-        ctx.shadowColor='#ff6a00';
-        ctx.shadowBlur=20+pulse*15;
-        // Roll body
-        ctx.beginPath();ctx.roundRect(rp.x-18,rp.y-rh/2,22,rh,5);
-        ctx.fillStyle='rgba(20,60,50,0.9)';ctx.fill();
-        ctx.strokeStyle=`rgba(255,106,0,${0.7+pulse*0.3})`;ctx.lineWidth=2;ctx.stroke();
-        // Film layers
-        for(let k=0;k<8;k++){
-          const ly=rp.y-rh/2+k*(rh/8)+rh/16;
-          ctx.beginPath();ctx.moveTo(rp.x-15,ly);ctx.lineTo(rp.x+2,ly);
-          ctx.strokeStyle=`rgba(200,240,220,${0.2+k*0.06})`;ctx.lineWidth=1.2;ctx.stroke();
-        }
-        // Big pulsing grab handle
-        ctx.shadowBlur=25+pulse*20;
-        ctx.beginPath();ctx.arc(rp.x+4,rp.y,14+pulse*3,0,Math.PI*2);
-        ctx.fillStyle=`rgba(255,106,0,${0.85+pulse*0.15})`;ctx.fill();
-        ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke();
-        ctx.shadowBlur=0;
-        ctx.fillStyle='rgba(0,0,0,0.7)';
-        ctx.font='13px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';
-        ctx.fillText('✋',rp.x+4,rp.y);
-        ctx.restore();
-        // Label
-        ctx.save();
-        ctx.fillStyle='#ff6a00';ctx.font='bold 13px monospace';
-        ctx.textAlign='left';ctx.textBaseline='middle';
-        ctx.fillText('PULL →',rp.x+24,rp.y-8);
-        ctx.fillStyle='rgba(255,255,255,0.6)';ctx.font='10px monospace';
-        ctx.fillText('tint film roll',rp.x+24,rp.y+8);
-        // Bouncing arrow
-        const bounce=Math.sin(Date.now()*0.007)*5;
-        ctx.fillStyle='rgba(255,106,0,0.9)';ctx.font='bold 16px sans-serif';
-        ctx.fillText('→',rp.x+24+bounce,rp.y);
-        ctx.restore();
+      const rp=rollPos(),b=polyBounds();
+      const showSheet=filmDragging||filmPlaced||filmReturning;
+      const cov=filmDragging?computeFilmCov():filmPlaced?1:0;
+      const ready=cov>=0.82;
+      // where the film has to go
+      if(!filmPlaced){
+        const pulse=0.5+0.5*Math.sin(performance.now()*0.006);
+        ctx.save();drawPolyPath(poly);
+        if(ready){ctx.strokeStyle='#ff6a00';ctx.lineWidth=3;ctx.shadowColor='#ff6a00';ctx.shadowBlur=14;}
+        else{ctx.setLineDash([6,6]);ctx.strokeStyle=`rgba(255,106,0,${0.35+pulse*0.35})`;ctx.lineWidth=2;}
+        ctx.stroke();ctx.restore();
+      }
+      if(!filmDragging&&!filmPlaced) drawRoll(rp);
+      if(showSheet){
+        // film is cut a little oversize, like the real thing
+        const k=filmPlaced?1:1.05,cx=b.minX+filmW/2,cy=b.minY+filmH/2;
+        const pts=scaledPoly().map(([x,y])=>[filmSX+(x-cx)*k,filmSY+(y-cy)*k]);
+        drawFilmSheet(pts,filmDragging);
       }
       if(filmDragging){
-        // Draw film as the SAME POLYGON SHAPE, offset to film position
-        const b=polyBounds();
-        const offX=filmX-b.minX-filmW/2;
-        const offY=filmY-b.minY-filmH/2;
-        const fpts=scaledPoly().map(([x,y])=>[x+offX,y+offY]);
-        const cov=computeFilmCov();
-        const cc=cov>0.85?'rgba(255,106,0,':'rgba(240,160,80,';
-        // Show ghost window outline
-        drawPolyPath(poly);
-        ctx.setLineDash([5,5]);ctx.strokeStyle='rgba(255,106,0,0.3)';ctx.lineWidth=1;ctx.stroke();ctx.setLineDash([]);
-        // Film shape
-        ctx.save();ctx.globalAlpha=0.45;
-        drawPolyPath(fpts);ctx.fillStyle=cc+'0.6)';ctx.fill();
-        ctx.globalAlpha=1;
-        drawPolyPath(fpts);ctx.strokeStyle=cc+'0.95)';ctx.lineWidth=2;ctx.stroke();
-        ctx.restore();
-        // Coverage counter at bottom of window
-        const bfilm=polyBounds();
         ctx.save();
         ctx.fillStyle='rgba(0,0,0,0.7)';
-        ctx.beginPath();ctx.roundRect(bfilm.minX+8,bfilm.maxY+4,155,32,8);ctx.fill();
-        ctx.fillStyle='#ff6a00';
+        ctx.beginPath();ctx.roundRect(b.minX+8,b.maxY+4,ready?190:170,32,8);ctx.fill();
+        ctx.fillStyle=ready?'#ff6a00':'#e8e4d9';
         ctx.font="bold 18px 'DM Mono',monospace";
         ctx.textAlign='left';ctx.textBaseline='middle';
-        ctx.fillText(Math.round(cov*100)+'% coverage',bfilm.minX+16,bfilm.maxY+20);
+        ctx.fillText(ready?'Let go! ✓':Math.round(cov*100)+'% lined up',b.minX+16,b.maxY+20);
         ctx.restore();
       }
     }
@@ -1427,49 +1599,57 @@
 
 
 
-    // ── STEP 3: SQUEEGEE STROKES ──
     // ── STEP 3: CUT ──
     if(state==='playing'&&step===3){
       const topPts=getTopPath();
-      // Draw cut line so far
-      if(cutProgress>0&&topPts.length>=2){
+      if(topPts.length>=2){
+        const head=pathAt(cutProgress);
+        // excess film above the edge: still attached ahead of the knife, gone behind it
         ctx.save();
-        ctx.strokeStyle='rgba(255,255,255,0.95)';
-        ctx.lineWidth=2;ctx.setLineDash([4,2]);
+        ctx.beginPath();ctx.rect(head.x,0,W-head.x,H);ctx.clip();
+        ctx.beginPath();ctx.moveTo(topPts[0][0],topPts[0][1]-CUT_BAND);
+        topPts.forEach(p=>ctx.lineTo(p[0],p[1]-CUT_BAND));
+        for(let i=topPts.length-1;i>=0;i--) ctx.lineTo(topPts[i][0],topPts[i][1]);
+        ctx.closePath();
+        ctx.fillStyle='rgba(70,90,115,0.85)';ctx.fill();
+        ctx.strokeStyle='rgba(235,242,250,0.85)';ctx.lineWidth=1.2;ctx.stroke();
+        ctx.restore();
+        // cut line: crisp behind the knife, dashed guide ahead of it
+        ctx.save();
+        ctx.lineCap='round';
         ctx.beginPath();ctx.moveTo(topPts[0][0],topPts[0][1]);
-        for(let i=1;i<topPts.length;i++){
-          if(topPts[i][0]<=knifeX) ctx.lineTo(topPts[i][0],topPts[i][1]);
-          else{ctx.lineTo(knifeX,knifeY);break;}
+        for(const p of topPts){ if(p[0]<head.x) ctx.lineTo(p[0],p[1]); else break; }
+        ctx.lineTo(head.x,head.y);
+        ctx.strokeStyle='rgba(255,255,255,0.9)';ctx.lineWidth=1.5;ctx.stroke();
+        const pulse=0.5+0.5*Math.sin(performance.now()*0.006);
+        ctx.beginPath();ctx.moveTo(head.x,head.y);
+        for(const p of topPts){ if(p[0]>head.x) ctx.lineTo(p[0],p[1]); }
+        ctx.setLineDash([6,6]);ctx.lineDashOffset=-performance.now()*0.03;
+        ctx.strokeStyle=`rgba(255,106,0,${0.55+pulse*0.4})`;ctx.lineWidth=2.5;ctx.stroke();
+        ctx.restore();
+        // where to put the knife
+        if(!knifeDragging&&!cutsDone){
+          ctx.save();
+          ctx.beginPath();ctx.arc(head.x,head.y,12+pulse*6,0,Math.PI*2);
+          ctx.strokeStyle=`rgba(255,106,0,${0.5+pulse*0.5})`;ctx.lineWidth=2.5;ctx.stroke();
+          ctx.fillStyle='#fff';ctx.font="bold 11px 'DM Mono',monospace";ctx.textAlign='center';
+          ctx.shadowColor='rgba(0,0,0,0.8)';ctx.shadowBlur=4;
+          ctx.fillText(cutProgress>0?'KEEP GOING':'START HERE',Math.max(44,Math.min(W-44,head.x)),head.y-26);
+          ctx.restore();
         }
-        ctx.stroke();ctx.setLineDash([]);ctx.restore();
+        // knife: on the cut while held, otherwise hovering where the mouse is (or waiting at the start)
+        if(cutsDone){}
+        else if(knifeDragging) drawKnife(head.x,head.y,head.ang,true);
+        else if(knifeVis&&knifeHoverX) drawKnife(knifeHoverX,knifeHoverY,head.ang,false);
+        else drawKnife(head.x,head.y,head.ang,false);
       }
-      // Knife
-      if(knifeVis&&topPts.length>=2){
-        const kx=cutProgress>0?knifeX:topPts[0][0];
-        const ky=cutProgress>0?knifeY:topPts[0][1];
-        drawKnife(kx,ky,0);
-      }
-      // Off-path warning
-      if(cutOffPath&&cutStarted&&!cutsDone){
+      if(cutOffPath&&knifeDragging&&!cutsDone){
         const b2=polyBounds();
         ctx.save();
-        ctx.fillStyle='rgba(226,85,85,0.9)';
-        ctx.font="bold 13px 'DM Mono',monospace";
+        ctx.fillStyle='rgba(0,0,0,0.7)';ctx.beginPath();ctx.roundRect((b2.minX+b2.maxX)/2-120,b2.maxY+4,240,30,8);ctx.fill();
+        ctx.fillStyle='#e25555';ctx.font="bold 14px 'DM Mono',monospace";
         ctx.textAlign='center';ctx.textBaseline='middle';
-        ctx.fillText('⚠ Too far! Restarting cut...', (b2.minX+b2.maxX)/2, b2.minY-14);
-        ctx.restore();
-      }
-      // START HERE indicator
-      if(!cutStarted&&topPts.length>=2){
-        const sx=topPts[0][0],sy=topPts[0][1];
-        const pulse=0.5+0.5*Math.sin(Date.now()*0.006);
-        ctx.save();
-        ctx.beginPath();ctx.arc(sx,sy,14+pulse*6,0,Math.PI*2);
-        ctx.strokeStyle=`rgba(240,160,60,${0.6+pulse*0.4})`;ctx.lineWidth=2.5;ctx.stroke();
-        ctx.beginPath();ctx.arc(sx,sy,8,0,Math.PI*2);
-        ctx.fillStyle='rgba(240,160,60,0.9)';ctx.fill();
-        ctx.fillStyle='#fff';ctx.font="bold 10px monospace";ctx.textAlign='center';
-        ctx.fillText('START',sx,sy-20);ctx.fillText('HERE',sx,sy-9);
+        ctx.fillText('Keep the knife on the edge',(b2.minX+b2.maxX)/2,b2.maxY+19);
         ctx.restore();
       }
     }
@@ -1532,49 +1712,15 @@
     }
 
     // ── SPONGE TOOL (always on top) ──
-    if(state==='playing'&&step===1){
-      const sx=spongeX, sy=spongeY;
+    if(state==='playing'&&step===1&&spongeVis){
       ctx.save();
-      // Sponge body - no handle, centred on finger
-      ctx.shadowColor='rgba(255,150,0,0.5)';
-      ctx.shadowBlur=spongeDown?16:8;
-      ctx.fillStyle=spongeDown?'#ffb830':'#f0a820';
-      ctx.beginPath();ctx.roundRect(sx-34,sy-18,68,36,10);ctx.fill();
-      ctx.strokeStyle=spongeDown?'#e08010':'#c87010';ctx.lineWidth=2.5;ctx.stroke();
-      ctx.shadowBlur=0;
-      // Sponge texture dots
-      ctx.fillStyle='rgba(0,0,0,0.15)';
-      [[-20,-6],[-8,-6],[4,-6],[16,-6],[-14,5],[0,5],[14,5]].forEach(([dx,dy])=>{
-        ctx.beginPath();ctx.arc(sx+dx,sy+dy,4,0,Math.PI*2);ctx.fill();
-      });
-      // Soap bubbles - more = faster movement
-      if(spongeVis&&spongeSpeed>0.5){
-        const bubCount=Math.max(4,Math.min(20,Math.floor(spongeSpeed*2)));
-        for(let s=0;s<bubCount;s++){
-          const angle=Math.random()*Math.PI*2;
-          const dist=20+Math.random()*45;
-          const bx=sx+Math.cos(angle)*dist*(0.6+Math.random()*0.8);
-          const by=sy+Math.sin(angle)*dist*0.5;
-          const br=2+Math.random()*5;
-          ctx.globalAlpha=0.3+Math.random()*0.5;
-          // Bubble with highlight
-          // White soap bubble with orange/cyan tint to stand out
-          const g=ctx.createRadialGradient(bx-br*0.35,by-br*0.35,br*0.05,bx,by,br);
-          g.addColorStop(0,'rgba(255,255,255,1)');
-          g.addColorStop(0.4,'rgba(255,180,80,0.5)');
-          g.addColorStop(1,'rgba(255,120,0,0.1)');
-          ctx.fillStyle=g;
-          ctx.beginPath();ctx.arc(bx,by,br,0,Math.PI*2);ctx.fill();
-          ctx.strokeStyle='rgba(255,140,40,0.9)';
-          ctx.lineWidth=1.2;ctx.stroke();
-          // Bright white highlight
-          ctx.fillStyle='rgba(255,255,255,0.95)';
-          ctx.beginPath();ctx.arc(bx-br*0.3,by-br*0.35,br*0.28,0,Math.PI*2);ctx.fill();
-        }
-        ctx.globalAlpha=1;
-      }
+      ctx.translate(spongeX,spongeY);ctx.rotate(spongeAng);
+      if(spongeDown) ctx.scale(1.06,0.88);
+      ctx.shadowColor='rgba(0,0,0,0.45)';ctx.shadowBlur=spongeDown?6:14;ctx.shadowOffsetY=spongeDown?2:7;
+      ctx.drawImage(spongeSprite,-spongeSprite.width/2,-spongeSprite.height/2);
       ctx.restore();
     }
+    drawSparkles();
 
     // Film strip falling
     drawFilmStrip();
@@ -1780,7 +1926,7 @@
   function startGame(){
     console.log('startGame called');
     state='playing';step=0;score=0;tLeft=40;advancing=false;
-    sprayCoverage=0;wetCells=new Set();mistParticles=[];dripParticles=[];initHose();resetWet();sprayHeld=false;spraySkipped=false;spongeSkipped=false;
+    sprayCoverage=0;wetCells=new Set();mistParticles=[];dripParticles=[];initHose();resetWet();sprayHeld=false;dirtC=null;sudsC=null;suds=[];sparkles=[];spraySkipped=false;spongeSkipped=false;
     filmPlaced=false;filmDragging=false;
     cutProgress=0;cutStarted=false;knifeVis=false;knifeDragging=false;cutOffPath=false;cutsDone=false;filmStrip=null;
     bubbles=[];scrapeCells=new Set();scraperVis=false;scraperDown=false;initStrokes();
@@ -1832,12 +1978,9 @@
       }
     }
     if(step===0){sprayHeld=true;fireMist(px,py);setCursor();}
-    if(step===1){spongeDown=true;spongeVis=true;}
-    if(step===2&&!filmPlaced){
-      const rp=rollPos(),dx=px-rp.x,dy=py-rp.y;
-      if(dx*dx+dy*dy<3600||filmDragging){filmDragging=true;filmX=px;filmY=py;}
-    }
-    if(step===3){cutStarted=true;knifeVis=true;}
+    if(step===1){spongeDown=true;spongeMove(px,py);}
+    if(step===2) filmPress(px,py);
+    if(step===3){cutStarted=true;knifeDragging=true;cutMove(px,py);}
     if(step===4){
       scraperDown=true;scraperX=px;scraperY=py;
       scraperPX=px;scraperPY=py;scraperVis=true;
@@ -1849,18 +1992,9 @@
     if(state!=='playing'||advancing) return;
     const[px,py]=getXY(e);
     if(step===0){fireMist(px,py);}
-    if(step===1){
-      spongeVX=px-spongePX; spongeVY=py-spongePY;
-      spongeSpeed=Math.sqrt(spongeVX*spongeVX+spongeVY*spongeVY);
-      spongePX=spongeX; spongePY=spongeY;
-      spongeVis=true;spongeX=px;spongeY=py;spongeAt(px,py);
-      if(getSpongeCov()>=1.0&&!advancing)advanceStep();}
-    if(step===2&&!filmPlaced){filmDragging=true;filmX=px;filmY=py;}
-    if(step===3){
-      knifeVis=true;
-      updateCut(px,py);
-      if(cutProgress>=0.95&&!advancing){cutsDone=true;bakeTint(true);spawnFilmStrip();playFilmFall();advanceStep();}
-    }
+    if(step===1) spongeMove(px,py);
+    if(step===2) filmMove(px,py);
+    if(step===3) cutMove(px,py);
     if(step===4){
       const oldX=scraperX,oldY=scraperY;
       scraperPX=scraperX;scraperPY=scraperY;
@@ -1870,13 +2004,9 @@
   });
 
   window.addEventListener('mouseup',()=>{
-    sprayHeld=false;
+    sprayHeld=false;knifeDragging=false;
     spongeDown=false;
-    if(step===2&&filmDragging&&!filmPlaced){
-      filmCoverage=computeFilmCov();
-      if(filmCoverage>=0.82){filmDragging=false;filmPlaced=true;advanceStep();}
-      else{float(`${Math.round(filmCoverage*100)}% — cover the window!`,'#e25555');}
-    }
+    if(step===2) filmRelease();
     scraperDown=false;
   });
 
@@ -1899,12 +2029,9 @@
     }
     if(step===0){sprayHeld=true;fireMist(px,py-TOUCH_LIFT);}
 
-    else if(step===1){spongeDown=true;spongeVis=true;}
-    else if(step===2&&!filmPlaced){
-      const rp2=rollPos(),dx=px-rp2.x,dy=py-rp2.y;
-      if(dx*dx+dy*dy<3600||filmDragging){filmDragging=true;filmX=px;filmY=py;}
-    }
-    else if(step===3){cutStarted=true;knifeVis=true;}
+    else if(step===1){spongeX=px;spongeY=py-SPONGE_LIFT;spongeDown=true;spongeMove(px,py-SPONGE_LIFT);}
+    else if(step===2) filmPress(px,py);
+    else if(step===3){cutStarted=true;knifeDragging=true;cutMove(px,py-CUT_LIFT);}
     else if(step===4){
       scraperDown=true;scraperVis=true;
       scraperX=px;scraperY=py;scraperPX=px;scraperPY=py;
@@ -1915,18 +2042,9 @@
     if(state!=='playing'||advancing) return;e.preventDefault();
     const[px,py]=getXY(e);
     if(step===0){fireMist(px,py-TOUCH_LIFT);}
-    if(step===1){
-      spongeVX=px-spongePX; spongeVY=py-spongePY;
-      spongeSpeed=Math.sqrt(spongeVX*spongeVX+spongeVY*spongeVY);
-      spongePX=spongeX; spongePY=spongeY;
-      spongeVis=true;spongeX=px;spongeY=py;spongeAt(px,py);
-      if(getSpongeCov()>=1.0&&!advancing)advanceStep();}
-    if(step===2&&!filmPlaced){filmDragging=true;filmX=px;filmY=py;}
-    if(step===3){
-      knifeVis=true;
-      updateCut(px,py);
-      if(cutProgress>=0.95&&!advancing){cutsDone=true;bakeTint(true);spawnFilmStrip();playFilmFall();advanceStep();}
-    }
+    if(step===1) spongeMove(px,py-SPONGE_LIFT);
+    if(step===2) filmMove(px,py);
+    if(step===3) cutMove(px,py-CUT_LIFT);
     if(step===4){
       const oldX4=scraperX,oldY4=scraperY;
       scraperPX=scraperX;scraperPY=scraperY;
@@ -1936,12 +2054,8 @@
   },{passive:false});
 
   window.addEventListener('touchend',()=>{
-    spongeDown=false;sprayHeld=false;scraperDown=false;
-    if(step===2&&filmDragging&&!filmPlaced){
-      filmCoverage=computeFilmCov();
-      if(filmCoverage>=0.82){filmDragging=false;filmPlaced=true;advanceStep();}
-      else{float(`${Math.round(filmCoverage*100)}% — cover the window!`,'#e25555');}
-    }
+    spongeDown=false;sprayHeld=false;scraperDown=false;knifeDragging=false;knifeHoverX=0;
+    if(step===2) filmRelease();
   });
 
   function resize(){
@@ -1957,6 +2071,13 @@
       resetWet();
       wetCells.forEach(id=>{const row=Math.floor(id/5000),col=id%5000;
         paintWet(col*CELL+CELL/2,row*CELL+CELL/2,CELL*1.5);});
+    }
+    if(state==='playing'&&step===1&&dirtC){
+      buildSpongeWinCells();buildDirt();
+      const c=dirtC.getContext('2d');c.save();c.globalCompositeOperation='destination-out';
+      spongeCells.forEach(id=>{const row=Math.floor(id/3000),col=id%3000;
+        c.fillRect(col*SPONGE_CELL,row*SPONGE_CELL,SPONGE_CELL,SPONGE_CELL);});
+      c.restore();
     }
     buildSpongeWinCells();
     buildScrapeWinCells();
