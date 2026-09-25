@@ -124,7 +124,7 @@
   <div id="ov">
     <div class="ov-in">
     <h2 class="title">Window Tint<br><span>Simulator</span></h2>
-    <div class="prize"><span class="prize-stars">★★★</span><span>Finish the job for <b>$10 off</b> · get 3 stars for <b>$20 off</b></span></div>
+    <div class="prize"><span class="prize-stars">★★★</span><span>Finish the job for <b>$10 off</b> · a fast, perfect job gets 3 stars and <b>$20 off</b></span></div>
     <ol class="steps">
       <li><span class="n">1</span><span class="si">💧</span><b>Spray</b><span class="sd">Hold and drag over the glass</span></li>
       <li><span class="n">2</span><span class="si">🧽</span><b>Clean</b><span class="sd">Scrub it with the sponge</span></li>
@@ -1600,11 +1600,13 @@
       if(filmDragging){
         ctx.save();
         ctx.fillStyle='rgba(0,0,0,0.7)';
-        ctx.beginPath();ctx.roundRect(b.minX+8,b.maxY+4,ready?190:170,32,8);ctx.fill();
-        ctx.fillStyle=ready?'#ff6a00':'#e8e4d9';
+        const perfect=cov>=0.95;
+        const label=perfect?'★ Perfect! Let go':ready?`Let go · ${Math.round(cov*100)}%`:Math.round(cov*100)+'% lined up';
         ctx.font="bold 18px 'DM Mono',monospace";
+        ctx.beginPath();ctx.roundRect(b.minX+8,b.maxY+4,ctx.measureText(label).width+18,32,8);ctx.fill();
+        ctx.fillStyle=perfect?'#ffd166':ready?'#ff6a00':'#e8e4d9';
         ctx.textAlign='left';ctx.textBaseline='middle';
-        ctx.fillText(ready?'Let go! ✓':Math.round(cov*100)+'% lined up',b.minX+16,b.maxY+20);
+        ctx.fillText(label,b.minX+16,b.maxY+20);
         ctx.restore();
       }
     }
@@ -1833,10 +1835,15 @@
     clearInterval(ticker);ticker=null;state='done';advancing=false;
     const tb=Math.round(tLeft*15);score+=tb;document.getElementById('sd').textContent=score;
     // Rewards. Finishing all five steps always scores at least 614 (running out of time
-    // scores 350 at most), so 2 stars = "got the job done". 3 stars needs 950, which means
-    // finishing in about 20 seconds with the film lined up well.
-    const STAR2=600, STAR3=950;
-    const stars=score>=STAR3?3:score>=STAR2?2:1;
+    // scores 350 at most), so 2 stars = "got the job done". 3 stars needs skill as well as
+    // speed: 1000+ pts (about 23s left with good film), the film lined up 95%+, and no skips.
+    const STAR2=600, STAR3=1000, FILM3=0.95;
+    const filmPct=Math.round(filmCoverage*100);
+    const need=[];
+    if(score<STAR3) need.push(`hit ${STAR3} pts`);
+    if(filmCoverage<FILM3) need.push(`line the film up 95%+ (you got ${filmPct}%)`);
+    if(spraySkipped||spongeSkipped) need.push('no skipping');
+    const stars=score<STAR2?1:need.length?2:3;
     const REWARD=stars===3?{off:'$20',code:'TINT20'}:stars===2?{off:'$10',code:'TINT10'}:null;
     const ss=[1,2,3].map(i=>`<span class="star ${i<=stars?'son':'sof'}" style="animation-delay:${0.15+i*0.28}s">&#9733;</span>`).join('');
     playSuccess();
@@ -1845,7 +1852,7 @@
     const BOOK_URL='';
     const PHONE='0488846848', PHONE_SHOWN='0488 846 848';
     const msg = stars===3 ? 'Flawless — that window is mint!' :
-      stars===2 ? `Nice job! Hit ${STAR3} pts for 3 stars and $20 off.` :
+      stars===2 ? `Nice job! For 3 stars and $20 off: ${need.join(', ')}.` :
       'Out of time! Finish all 5 steps to win $10 off.';
     const discountHTML = REWARD ? `
       <div class="win-card${stars===2?' silver':''}">
@@ -1948,7 +1955,7 @@
     console.log('startGame called');
     state='playing';step=0;score=0;tLeft=40;advancing=false;
     sprayCoverage=0;wetCells=new Set();mistParticles=[];dripParticles=[];initHose();resetWet();sprayHeld=false;dirtC=null;sudsC=null;suds=[];sparkles=[];spraySkipped=false;spongeSkipped=false;
-    filmPlaced=false;filmDragging=false;
+    filmPlaced=false;filmDragging=false;filmCoverage=0;
     cutProgress=0;cutStarted=false;knifeVis=false;knifeDragging=false;cutOffPath=false;cutsDone=false;filmStrip=null;
     bubbles=[];scrapeCells=new Set();scraperVis=false;scraperDown=false;initStrokes();
     spongeCells=new Set();spongeWinCells=new Set();spongeDown=false;spongeVis=false;
