@@ -66,6 +66,7 @@
   .win-card{width:100%;padding:16px;border:2px solid #ff6a00;border-radius:14px;background:linear-gradient(160deg,rgba(255,106,0,.18),rgba(255,106,0,.04));text-align:center;display:flex;flex-direction:column;gap:10px;animation:rise .5s .9s ease-out both}
   @keyframes rise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
   .win-title{font-size:15px;font-weight:500;color:#fff}
+  .win-card.silver{border-color:#9aa4b0;background:linear-gradient(160deg,rgba(180,190,205,.14),rgba(180,190,205,.03))}
   .code-row{display:flex;gap:8px;justify-content:center;align-items:stretch}
   .code{flex:1;font-size:20px;font-weight:500;color:#f0a050;letter-spacing:4px;padding:8px 10px;border:1px dashed #f0a050;border-radius:8px;background:rgba(240,160,80,.08);user-select:all}
   .copy-btn{padding:0 14px;background:#1d1d28;color:#e8e4d9;border:1px solid #3a3a4c;border-radius:8px;font-family:'DM Mono',monospace;font-size:11px;letter-spacing:.06em;cursor:pointer}
@@ -123,7 +124,7 @@
   <div id="ov">
     <div class="ov-in">
     <h2 class="title">Window Tint<br><span>Simulator</span></h2>
-    <div class="prize"><span class="prize-stars">★★★</span><span>Get 3 stars and win <b>$20 off</b> a real tint</span></div>
+    <div class="prize"><span class="prize-stars">★★★</span><span>Finish the job for <b>$10 off</b> · get 3 stars for <b>$20 off</b></span></div>
     <ol class="steps">
       <li><span class="n">1</span><span class="si">💧</span><b>Spray</b><span class="sd">Hold and drag over the glass</span></li>
       <li><span class="n">2</span><span class="si">🧽</span><b>Clean</b><span class="sd">Scrub it with the sponge</span></li>
@@ -1831,7 +1832,12 @@
     if(state==='done') return;
     clearInterval(ticker);ticker=null;state='done';advancing=false;
     const tb=Math.round(tLeft*15);score+=tb;document.getElementById('sd').textContent=score;
-    const stars=score>=800?3:score>=500?2:1;
+    // Rewards. Finishing all five steps always scores at least 614 (running out of time
+    // scores 350 at most), so 2 stars = "got the job done". 3 stars needs 950, which means
+    // finishing in about 20 seconds with the film lined up well.
+    const STAR2=600, STAR3=950;
+    const stars=score>=STAR3?3:score>=STAR2?2:1;
+    const REWARD=stars===3?{off:'$20',code:'TINT20'}:stars===2?{off:'$10',code:'TINT10'}:null;
     const ss=[1,2,3].map(i=>`<span class="star ${i<=stars?'son':'sof'}" style="animation-delay:${0.15+i*0.28}s">&#9733;</span>`).join('');
     playSuccess();
     // Online booking is being moved to a new page. Until it's live, winners call or text to book.
@@ -1839,24 +1845,24 @@
     const BOOK_URL='';
     const PHONE='0488846848', PHONE_SHOWN='0488 846 848';
     const msg = stars===3 ? 'Flawless — that window is mint!' :
-      stars===2 ? 'Good tint job! One more star wins you $20 off.' :
-      'Keep practising — 3 stars wins you $20 off a real tint.';
-    const discountHTML = stars===3 ? `
-      <div class="win-card">
-        <div class="win-title">🎉 You've won $20 off a full car tint</div>
+      stars===2 ? `Nice job! Hit ${STAR3} pts for 3 stars and $20 off.` :
+      'Out of time! Finish all 5 steps to win $10 off.';
+    const discountHTML = REWARD ? `
+      <div class="win-card${stars===2?' silver':''}">
+        <div class="win-title">🎉 You've won ${REWARD.off} off a full car tint</div>
         <div class="code-row">
-          <span class="code" id="promo-code">TINT3STAR</span>
+          <span class="code" id="promo-code">${REWARD.code}</span>
           <button class="copy-btn" id="copy-code">COPY CODE</button>
         </div>
         ${BOOK_URL
-          ? `<a class="book-btn" href="${BOOK_URL}" target="_blank" rel="noopener">BOOK NOW &amp; SAVE $20 →</a>
+          ? `<a class="book-btn" href="${BOOK_URL}" target="_blank" rel="noopener">BOOK NOW &amp; SAVE ${REWARD.off} →</a>
              <div class="win-note">Enter the code when you book</div>`
           : `<a class="book-btn" href="tel:${PHONE}">📞 CALL TO BOOK · ${PHONE_SHOWN}</a>
-             <div class="win-note">Mention code TINT3STAR · or <a href="sms:${PHONE}?body=${encodeURIComponent('Hi! I got 3 stars on the tint game - code TINT3STAR. Keen to book a tint.')}" style="color:#ff6a00">text us</a></div>`}
+             <div class="win-note">Mention code ${REWARD.code} · or <a href="sms:${PHONE}?body=${encodeURIComponent(`Hi! I got ${stars} stars on the tint game - code ${REWARD.code} for ${REWARD.off} off. Keen to book a tint.`)}" style="color:#ff6a00">text us</a></div>`}
       </div>` : '';
 
     ov.innerHTML=`<div class="ov-in end">
-    <h2 class="title">Job <span>Done!</span></h2>
+    <h2 class="title">${stars===1?'Out of <span>time!</span>':'Job <span>Done!</span>'}</h2>
     <div class="stars-row">${ss}</div>
     <div class="score-big">${score} <small>pts</small></div>
     ${tb?`<div class="bonus">includes +${tb} time bonus</div>`:''}
@@ -1873,7 +1879,8 @@
     </div>
     </div>`;
     ov.style.display='flex';ov.scrollTop=0;
-    instrEl.innerHTML=stars===3?'🏆 <b>3 stars!</b> Your $20 code is below':'🏁 <b>Job done!</b> Play again to beat your score';
+    instrEl.innerHTML=stars===3?'🏆 <b>3 stars!</b> Your $20 code is below':
+      stars===2?'🏁 <b>Job done!</b> Your $10 code is below':'⏱ <b>Out of time!</b> Play again';
     if(stars===3) confetti();
     const copyBtn=document.getElementById('copy-code');
     if(copyBtn) copyBtn.addEventListener('click',()=>{
@@ -1883,7 +1890,7 @@
         const sel=getSelection();sel.removeAllRanges();sel.addRange(r);
         try{document.execCommand('copy');done();}catch(e){}
       };
-      if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText('TINT3STAR').then(done,fallback);
+      if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(REWARD.code).then(done,fallback);
       else fallback();
     });
     document.getElementById('save-btn').addEventListener('click',()=>{
