@@ -1834,7 +1834,10 @@
     const stars=score>=800?3:score>=500?2:1;
     const ss=[1,2,3].map(i=>`<span class="star ${i<=stars?'son':'sof'}" style="animation-delay:${0.15+i*0.28}s">&#9733;</span>`).join('');
     playSuccess();
-    const BOOK_URL='https://app.squarespacescheduling.com/schedule/9c2a2b90';
+    // Online booking is being moved to a new page. Until it's live, winners call or text to book.
+    // When it is, put its address here and the button becomes "Book now" again.
+    const BOOK_URL='';
+    const PHONE='0488846848', PHONE_SHOWN='0488 846 848';
     const msg = stars===3 ? 'Flawless — that window is mint!' :
       stars===2 ? 'Good tint job! One more star wins you $20 off.' :
       'Keep practising — 3 stars wins you $20 off a real tint.';
@@ -1845,8 +1848,11 @@
           <span class="code" id="promo-code">TINT3STAR</span>
           <button class="copy-btn" id="copy-code">COPY CODE</button>
         </div>
-        <a class="book-btn" href="${BOOK_URL}" target="_blank" rel="noopener">BOOK NOW &amp; SAVE $20 →</a>
-        <div class="win-note">Enter the code when you book</div>
+        ${BOOK_URL
+          ? `<a class="book-btn" href="${BOOK_URL}" target="_blank" rel="noopener">BOOK NOW &amp; SAVE $20 →</a>
+             <div class="win-note">Enter the code when you book</div>`
+          : `<a class="book-btn" href="tel:${PHONE}">📞 CALL TO BOOK · ${PHONE_SHOWN}</a>
+             <div class="win-note">Mention code TINT3STAR · or <a href="sms:${PHONE}?body=${encodeURIComponent('Hi! I got 3 stars on the tint game - code TINT3STAR. Keen to book a tint.')}" style="color:#ff6a00">text us</a></div>`}
       </div>` : '';
 
     ov.innerHTML=`<div class="ov-in end">
