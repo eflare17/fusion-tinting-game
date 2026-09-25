@@ -383,6 +383,10 @@
   // underneath still decides the coverage %.
   const TOUCH_LIFT=60;
   let wetC=null, dropC=null, sprayRaf=0;
+  // Wet layer: half resolution, keeps the wettest value at each point (no stacking),
+  // so patches fade out softly at the edges however many times you spray over them.
+  const WS=2, WET_RGB=[110,180,245], WET_MAX=120;
+  let wetA=null, wetImg=null, wetW=0, wetH=0;
   const mistSprite=(()=>{
     const c=document.createElement('canvas');c.width=c.height=32;
     const x=c.getContext('2d'),g=x.createRadialGradient(16,16,0,16,16,16);
@@ -390,15 +394,35 @@
     x.fillStyle=g;x.fillRect(0,0,32,32);return c;
   })();
   function resetWet(){
-    wetC=document.createElement('canvas');wetC.width=W;wetC.height=H;
+    wetW=Math.ceil(W/WS);wetH=Math.ceil(H/WS);
+    wetC=document.createElement('canvas');wetC.width=wetW;wetC.height=wetH;
+    wetA=new Uint8ClampedArray(wetW*wetH);
+    wetImg=wetC.getContext('2d').createImageData(wetW,wetH);
+    const d=wetImg.data;
+    for(let i=0;i<d.length;i+=4){d[i]=WET_RGB[0];d[i+1]=WET_RGB[1];d[i+2]=WET_RGB[2];}
     dropC=document.createElement('canvas');dropC.width=W;dropC.height=H;
   }
   function paintWet(x,y,r){
     if(!wetC) resetWet();
-    const c=wetC.getContext('2d');
-    const g=c.createRadialGradient(x,y,0,x,y,r*1.1);
-    g.addColorStop(0,'rgba(110,180,245,0.34)');g.addColorStop(0.7,'rgba(110,180,245,0.24)');g.addColorStop(1,'rgba(95,170,240,0)');
-    c.fillStyle=g;c.beginPath();c.arc(x,y,r*1.1,0,Math.PI*2);c.fill();
+    const cx=x/WS,cy=y/WS,R=r*1.3/WS,inner=r*0.45/WS;
+    const x0=Math.max(0,Math.floor(cx-R)),x1=Math.min(wetW-1,Math.ceil(cx+R));
+    const y0=Math.max(0,Math.floor(cy-R)),y1=Math.min(wetH-1,Math.ceil(cy+R));
+    if(x1<x0||y1<y0) return;
+    // a wobbly outline, different every burst, so the edge looks like water not a circle
+    const k1=Math.random()*6.3,k2=Math.random()*6.3;
+    const d=wetImg.data;
+    for(let py=y0;py<=y1;py++) for(let px=x0;px<=x1;px++){
+      const dx=px-cx,dy=py-cy,dist=Math.sqrt(dx*dx+dy*dy);
+      if(dist>=R) continue;
+      const ang=Math.atan2(dy,dx);
+      const edge=R*(0.88+0.07*Math.sin(ang*3+k1)+0.05*Math.sin(ang*7+k2));
+      if(dist>=edge) continue;
+      let t=(edge-dist)/(edge-inner);
+      t=t>=1?1:t*t*(3-2*t);
+      const a=t*WET_MAX,i=py*wetW+px;
+      if(a>wetA[i]){wetA[i]=a;d[i*4+3]=a;}
+    }
+    wetC.getContext('2d').putImageData(wetImg,0,0,x0,y0,x1-x0+1,y1-y0+1);
   }
   function paintDroplet(x,y,r){
     if(!dropC) resetWet();
@@ -426,7 +450,7 @@
       // land somewhere inside the wet circle, more often near the middle
       const la=Math.random()*Math.PI*2, lr=r*Math.pow(Math.random(),0.7);
       mistParticles.push({sx:tip.x,sy:tip.y,lx:ax+Math.cos(la)*lr,ly:ay+Math.sin(la)*lr,
-        t:0,dur:7+Math.random()*7,r:3+Math.random()*4,landed:false});
+        t:0,dur:7+Math.random()*7,r:3+Math.random()*4,landed:false,core:lr<r*0.75});
     }
     if(Math.random()<0.08){
       const da=Math.random()*Math.PI*2,dr=Math.random()*r*0.8,dx=ax+Math.cos(da)*dr,dy=ay+Math.sin(da)*dr;
@@ -593,9 +617,8 @@
         const c=dropC.getContext('2d');
         c.save();c.globalCompositeOperation='destination-out';c.lineWidth=d.width*2.2;c.lineCap='round';
         c.beginPath();c.moveTo(d.x,oy);c.lineTo(d.x,d.y+d.len);c.stroke();c.restore();
-        const w=wetC.getContext('2d');
-        w.strokeStyle='rgba(95,170,240,0.12)';w.lineWidth=d.width*1.6;w.lineCap='round';
-        w.beginPath();w.moveTo(d.x,oy);w.lineTo(d.x,d.y);w.stroke();
+        c.strokeStyle='rgba(90,160,230,0.025)';c.lineWidth=d.width*1.2;c.lineCap='round';
+        c.beginPath();c.moveTo(d.x,oy);c.lineTo(d.x,d.y);c.stroke();
       }
       if(d.life<=0||!ptInWinPoly(d.x,d.y+d.len)) dripParticles.splice(i,1);
     }
@@ -607,7 +630,7 @@
       p.t++;
       if(!p.landed&&p.t>=p.dur){
         p.landed=true;
-        if(Math.random()<0.12&&ptInWinPoly(p.lx,p.ly)) paintDroplet(p.lx,p.ly,0.8+Math.pow(Math.random(),2)*3.2);
+        if(p.core&&Math.random()<0.14&&ptInWinPoly(p.lx,p.ly)) paintDroplet(p.lx,p.ly,0.8+Math.pow(Math.random(),2)*3.2);
       }
     }
     mistParticles=mistParticles.filter(p=>p.t<p.dur+8);
@@ -1198,7 +1221,8 @@
       // Wet glass + beads of water
       if(wetC){
         ctx.save();drawPolyPath(poly);ctx.clip();
-        ctx.drawImage(wetC,0,0);ctx.drawImage(dropC,0,0);
+        ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
+        ctx.drawImage(wetC,0,0,wetW*WS,wetH*WS);ctx.drawImage(dropC,0,0);
         ctx.restore();
       }
       // Water drips running down glass
@@ -1931,9 +1955,8 @@
     buildWinCells();
     if(state==='playing'&&step===0){
       resetWet();
-      const c=wetC.getContext('2d');c.fillStyle='rgba(95,170,240,0.35)';
       wetCells.forEach(id=>{const row=Math.floor(id/5000),col=id%5000;
-        c.beginPath();c.arc(col*CELL+CELL/2,row*CELL+CELL/2,CELL*0.9,0,Math.PI*2);c.fill();});
+        paintWet(col*CELL+CELL/2,row*CELL+CELL/2,CELL*1.5);});
     }
     buildSpongeWinCells();
     buildScrapeWinCells();
