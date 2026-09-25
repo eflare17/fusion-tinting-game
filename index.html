@@ -476,6 +476,7 @@
       filmSX+=(filmX-filmSX)*e;filmSY+=(filmY-filmSY)*e;
       if(filmReturning&&Math.hypot(filmX-filmSX,filmY-filmSY)<2) filmReturning=false;
     }
+    if(step===4) updateBubbles();
     sprayFrame();updateMist();updateDrips();updateSuds();updateSparkles();draw();
     sprayRaf=requestAnimationFrame(sprayLoop);
   }
@@ -763,47 +764,73 @@
     buildScrapeWinCells();
   }
 
+  // ── Squeegee ──
+  // The blade is a line segment where it's drawn (lifted above your finger on touch
+  // screens). Anything it sweeps over is carried along in front of it; bubbles pop when
+  // pushed off the glass. It also wipes a watery haze off the film as it goes.
+  const SQ_LIFT=50;
+  let sqAng=-Math.PI/2, hazeC=null, lastSqSound=0;
+  function bladeHalf(){return Math.max(30,Math.min(46,(polyBounds().maxX-polyBounds().minX)*0.14));}
+  function buildHaze(){
+    hazeC=document.createElement('canvas');hazeC.width=W;hazeC.height=H;
+    const c=hazeC.getContext('2d'),b=polyBounds(),bw=b.maxX-b.minX,bh=b.maxY-b.minY;
+    c.save();polyPathOn(c,scaledPoly());c.clip();
+    c.fillStyle='rgba(205,222,240,0.16)';c.fillRect(b.minX,b.minY,bw,bh);
+    for(let i=0;i<26;i++){
+      const x=b.minX+Math.random()*bw,y=b.minY+Math.random()*bh*0.6,l=bh*(0.15+Math.random()*0.35);
+      c.strokeStyle=`rgba(215,230,245,${0.08+Math.random()*0.1})`;c.lineWidth=2+Math.random()*4;c.lineCap='round';
+      c.beginPath();c.moveTo(x,y);c.lineTo(x+(Math.random()-0.5)*6,y+l);c.stroke();
+    }
+    for(let i=0;i<120;i++){
+      const x=b.minX+Math.random()*bw,y=b.minY+Math.random()*bh,r=0.6+Math.random()*1.8;
+      c.fillStyle='rgba(230,240,250,0.35)';c.beginPath();c.arc(x,y,r,0,Math.PI*2);c.fill();
+    }
+    c.restore();
+  }
+  function scraperMove(px,py){
+    scraperX=px;scraperY=py;scraperVis=true;
+  }
   function updateBubbles(){
-    const sdx = scraperX - scraperPX;
-    const sdy = scraperY - scraperPY;
-    const squeegeeSpd = Math.sqrt(sdx*sdx+sdy*sdy);
-    const squeegeeMoving = squeegeeSpd > 2;
-    const STICK_R = 55;  // bubbles stick to squeegee within this range
-    const PUSH_R  = 90;  // bubbles get pushed beyond this
-
-    bubbles.forEach(bub=>{
-      if(bub.dead){bub.opacity=Math.max(0,bub.opacity-0.08);return;}
-      const dx = bub.x - scraperX;
-      const dy = bub.y - scraperY;
-      const dist = Math.sqrt(dx*dx+dy*dy);
-
-      if(dist < STICK_R && squeegeeMoving){
-        // Bubble pushed along with squeegee movement
-        bub.vx += sdx * 0.6;
-        bub.vy += sdy * 0.6;
-        // Also push slightly away so it rides the edge not under it
-        if(dist > 0){
-          bub.vx += (dx/dist) * 3;
-          bub.vy += (dy/dist) * 3;
-        }
-      } else if(dist < PUSH_R && dist > 0){
-        const force = (1 - dist/PUSH_R) * 15;
-        bub.vx += (dx/dist) * force;
-        bub.vy += (dy/dist) * force;
-        if(squeegeeMoving){ bub.vx += sdx*0.3; bub.vy += sdy*0.3; }
+    const t=performance.now()*0.002;
+    const mx=scraperX-scraperPX,my=scraperY-scraperPY,m=Math.hypot(mx,my);
+    if(scraperDown&&m>0.6){
+      // blade faces the way you're pushing
+      const target=Math.atan2(my,mx);
+      let d=target-sqAng;while(d>Math.PI)d-=Math.PI*2;while(d<-Math.PI)d+=Math.PI*2;
+      sqAng+=d*Math.min(1,0.18+m*0.02);
+    }
+    const nx=Math.cos(sqAng),ny=Math.sin(sqAng),ux=-ny,uy=nx,half=bladeHalf();
+    if(scraperDown&&m>0.6){
+      // wipe the haze where the blade has swept
+      if(hazeC){
+        const c=hazeC.getContext('2d');c.save();c.globalCompositeOperation='destination-out';
+        c.fillStyle='rgba(0,0,0,0.9)';c.beginPath();
+        c.moveTo(scraperPX+ux*half,scraperPY+uy*half);c.lineTo(scraperX+ux*half,scraperY+uy*half);
+        c.lineTo(scraperX-ux*half,scraperY-uy*half);c.lineTo(scraperPX-ux*half,scraperPY-uy*half);
+        c.closePath();c.fill();c.restore();
       }
-
-      bub.vx *= 0.82; bub.vy *= 0.82;
-      bub.x += bub.vx; bub.y += bub.vy;
-
-      // Only die when reaching the window EDGE — never from squeegee contact
-      const b = polyBounds();
-      const atEdge = bub.x<b.minX+bub.r || bub.x>b.maxX-bub.r ||
-                     bub.y<b.minY+bub.r || bub.y>b.maxY-bub.r;
-      if(atEdge || !ptInWinPoly(bub.x, bub.y)){
-        bub.dead=true; try{playBubblePop();}catch(e){}
+      const now=performance.now();
+      if(now-lastSqSound>160){lastSqSound=now;playSqueegee();}
+    }
+    bubbles.forEach(bub=>{
+      if(bub.dead){bub.opacity=Math.max(0,bub.opacity-0.06);bub.r+=0.6;return;}
+      if(bub.ph===undefined) bub.ph=Math.random()*6.3;
+      if(scraperDown&&m>0.6){
+        const rx=bub.x-scraperX,ry=bub.y-scraperY;
+        const along=rx*ux+ry*uy,across=rx*nx+ry*ny;
+        // swept over (or just touching the front of the blade)? ride along in front of it
+        if(Math.abs(along)<half+bub.r*0.5&&across<bub.r+3&&across>-(m+bub.r+8)){
+          const a=Math.max(-half,Math.min(half,along));
+          bub.x=scraperX+ux*a+nx*(bub.r+3);bub.y=scraperY+uy*a+ny*(bub.r+3);
+        }
+      }
+      // a gentle wobble so they look alive
+      bub.wx=Math.sin(t+bub.ph)*0.6;bub.wy=Math.cos(t*1.3+bub.ph)*0.6;
+      if(!ptInWinPoly(bub.x,bub.y)){
+        bub.dead=true;bub.opacity=1;try{playBubblePop();}catch(e){}
       }
     });
+    scraperPX=scraperX;scraperPY=scraperY;
   }
 
   function allStrokesDone(){
@@ -1015,23 +1042,7 @@
   let lastScrapeAng = 0;
   let scrapeProgress = 0;
 
-  function spawnBubbles(){
-    const b=polyBounds();const arr=[];
-    const cx=(b.minX+b.maxX)/2, cy=(b.minY+b.maxY)/2;
-    const w=b.maxX-b.minX, h=b.maxY-b.minY;
-    for(let i=0;i<4;i++){
-      // Place bubbles in a spread pattern
-      let x,y,tries=0;
-      do{
-        // Spread across window but not too central
-        x=b.minX+w*(0.15+Math.random()*0.7);
-        y=b.minY+h*(0.15+Math.random()*0.7);
-        tries++;
-      }while(!ptInWinPoly(x,y)&&tries<40);
-      if(tries<40) arr.push({x,y,vx:0,vy:0,r:18+Math.random()*8,dead:false,opacity:1});
-    }
-    return arr;
-  }
+
 
 
 
@@ -1217,16 +1228,18 @@
 
 
   function spawnBubbles(){
-    const b=polyBounds();
-    const arr=[];
-    for(let t=0;t<80&&arr.length<16;t++){
+    const b=polyBounds(),k=(b.maxX-b.minX)/300,arr=[];
+    for(let t=0;t<200&&arr.length<16;t++){
       const x=b.minX+(b.maxX-b.minX)*Math.random();
       const y=b.minY+(b.maxY-b.minY)*Math.random();
-      if(ptInWinPoly(x,y)) arr.push({x,y,vx:0,vy:0,r:5+Math.random()*5,opacity:1,exited:false});
+      const r=(5+Math.random()*7)*Math.max(0.8,k);
+      // keep them off the very edge and apart from each other
+      if(ptInWinPoly(x,y)&&ptInWinPoly(x+r*2,y)&&ptInWinPoly(x-r*2,y)&&ptInWinPoly(x,y+r*2)&&ptInWinPoly(x,y-r*2)
+         &&arr.every(o=>Math.hypot(o.x-x,o.y-y)>o.r+r+6))
+        arr.push({x,y,vx:0,vy:0,r,opacity:1,dead:false});
     }
     return arr;
   }
-
   function bubblesGone(){return bubbles.every(b=>b.exited&&b.opacity<=0);}
 
   // ── Tint canvas ──
@@ -1292,15 +1305,16 @@
     } else if(step===3){
       score+=150;float('+150 pts','#ff6a00');
       setTimeout(()=>{
-        step=4;initStrokes();scraperVis=true;
+        step=4;initStrokes();buildHaze();scraperVis=false;sqAng=-Math.PI/2;
         const b4=polyBounds();
         scraperX=(b4.minX+b4.maxX)/2;scraperY=(b4.minY+b4.maxY)/2;
         scraperPX=scraperX;scraperPY=scraperY;
         advancing=false;hud();
       },400);
     } else if(step===4){
-      score+=300;float('+300 pts','#00c4f0');
-      setTimeout(()=>endGame(),600);
+      score+=300;float('+300 pts','#00c4f0');sparkleBurst(26);
+      clearInterval(ticker);ticker=null; // stop the clock: the time bonus is what's left now
+      setTimeout(()=>endGame(),1100);
     }
   }
 
@@ -1660,54 +1674,46 @@
       const b4=polyBounds();
       ctx.save();
       drawPolyPath(scaledPoly());ctx.clip();
+      if(hazeC) ctx.drawImage(hazeC,0,0);
+      // air bubbles trapped under the film
       bubbles.forEach(bub=>{
         if(bub.opacity<=0) return;
+        const x=bub.x+(bub.wx||0),y=bub.y+(bub.wy||0),r=bub.r;
         ctx.save();ctx.globalAlpha=bub.opacity;
-        const grd=ctx.createRadialGradient(bub.x-bub.r*0.3,bub.y-bub.r*0.3,bub.r*0.1,bub.x,bub.y,bub.r);
-        grd.addColorStop(0,'rgba(255,255,255,0.6)');
-        grd.addColorStop(0.5,'rgba(180,220,255,0.2)');
-        grd.addColorStop(1,'rgba(100,180,255,0.35)');
-        ctx.fillStyle=grd;
-        ctx.beginPath();ctx.arc(bub.x,bub.y,bub.r,0,Math.PI*2);ctx.fill();
-        ctx.strokeStyle='rgba(180,220,255,0.7)';ctx.lineWidth=1.2;ctx.stroke();
-        ctx.fillStyle='rgba(255,255,255,0.5)';
-        ctx.beginPath();ctx.arc(bub.x-bub.r*0.32,bub.y-bub.r*0.32,bub.r*0.28,0,Math.PI*2);ctx.fill();
+        ctx.fillStyle='rgba(190,210,230,0.16)';ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();
+        ctx.strokeStyle='rgba(225,238,250,0.75)';ctx.lineWidth=1.2;ctx.stroke();
+        ctx.strokeStyle='rgba(0,0,0,0.35)';ctx.lineWidth=1.5;
+        ctx.beginPath();ctx.arc(x,y+0.8,r,0.25,Math.PI-0.25);ctx.stroke();
+        ctx.strokeStyle='rgba(255,255,255,0.95)';ctx.lineWidth=1.6;
+        ctx.beginPath();ctx.arc(x,y,r*0.62,Math.PI*1.1,Math.PI*1.45);ctx.stroke();
         ctx.restore();
       });
       ctx.restore();
-      // Squeegee
+      // the squeegee: rubber blade across the push direction, orange handle trailing behind
       if(scraperVis){
-        if(!window._sqAng) window._sqAng=0;
-        let diff=lastScrapeAng-window._sqAng;
-        while(diff>Math.PI) diff-=Math.PI*2;
-        while(diff<-Math.PI) diff+=Math.PI*2;
-        window._sqAng+=diff*0.25;
-        const ang=window._sqAng;
-        const dispX=scraperX, dispY=scraperY-70;
-        ctx.save();ctx.translate(dispX,dispY);ctx.rotate(ang);
-        ctx.fillStyle='rgba(20,20,30,0.95)';
-        ctx.beginPath();ctx.roundRect(-40,-4,80,8,3);ctx.fill();
-        ctx.strokeStyle='rgba(255,106,0,0.85)';ctx.lineWidth=2;ctx.stroke();
-        ctx.fillStyle='rgba(160,175,190,0.92)';
-        ctx.beginPath();ctx.roundRect(-36,-10,72,7,2);ctx.fill();
-        ctx.fillStyle='rgba(65,85,95,0.95)';
-        ctx.beginPath();ctx.roundRect(-5,-58,10,50,5);ctx.fill();
-        ctx.strokeStyle='rgba(45,65,75,0.8)';ctx.lineWidth=1;ctx.stroke();
-        for(let g=0;g<5;g++){
-          ctx.beginPath();ctx.moveTo(-4,-52+g*9);ctx.lineTo(4,-52+g*9);
-          ctx.strokeStyle='rgba(255,255,255,0.15)';ctx.lineWidth=1.5;ctx.stroke();
-        }
+        const half=bladeHalf();
+        ctx.save();ctx.translate(scraperX,scraperY);ctx.rotate(sqAng+Math.PI/2);
+        ctx.shadowColor='rgba(0,0,0,0.5)';ctx.shadowBlur=scraperDown?6:14;ctx.shadowOffsetY=scraperDown?2:6;
+        // handle
+        const g=ctx.createLinearGradient(-6,0,6,0);g.addColorStop(0,'#d65200');g.addColorStop(0.5,'#ff8a2a');g.addColorStop(1,'#c44b00');
+        ctx.fillStyle=g;ctx.beginPath();ctx.roundRect(-6,6,12,50,6);ctx.fill();
+        ctx.shadowColor='transparent';
+        ctx.fillStyle='rgba(0,0,0,0.25)';for(let i=0;i<4;i++) ctx.fillRect(-5,30+i*6,10,2);
+        // holder + rubber blade
+        ctx.fillStyle='#3a3f47';ctx.beginPath();ctx.roundRect(-half,-1,half*2,9,3);ctx.fill();
+        ctx.fillStyle='#111';ctx.beginPath();ctx.roundRect(-half-1,-4,half*2+2,4,2);ctx.fill();
+        ctx.fillStyle='rgba(255,255,255,0.25)';ctx.fillRect(-half+3,1,half*2-6,1.5);
         ctx.restore();
       }
       // Counter
       const leftBubs=bubbles.filter(b=>!b.dead).length;
       ctx.save();
-      ctx.fillStyle='rgba(0,0,0,0.75)';
-      ctx.beginPath();ctx.roundRect(b4.minX+8,b4.minY+8,160,34,8);ctx.fill();
+      ctx.fillStyle='rgba(0,0,0,0.7)';
+      ctx.beginPath();ctx.roundRect(b4.minX+8,b4.maxY+4,170,32,8);ctx.fill();
       ctx.fillStyle=leftBubs===0?'#ff6a00':leftBubs<=2?'#00c4f0':'#e8e4d9';
-      ctx.font="bold 15px 'DM Mono',monospace";
+      ctx.font="bold 18px 'DM Mono',monospace";
       ctx.textAlign='left';ctx.textBaseline='middle';
-      ctx.fillText(leftBubs===0?'All clear! ✓':`${leftBubs} bubble${leftBubs!==1?'s':''} left`,b4.minX+14,b4.minY+25);
+      ctx.fillText(leftBubs===0?'All clear! ✓':`${leftBubs} bubble${leftBubs!==1?'s':''} left`,b4.minX+16,b4.maxY+20);
       ctx.restore();
     }
 
@@ -1767,7 +1773,8 @@
     d.style.transform='translateX(-50%)';
     d.style.color=col||'#ff6a00';
     d.style.fontSize='22px';
-    d.style.textShadow='0 0 12px rgba(0,0,0,0.8)';
+    d.style.fontWeight='700';
+    d.style.textShadow='0 1px 2px #000,0 0 6px rgba(0,0,0,0.9),0 0 18px rgba(0,0,0,0.7)';
     ga.appendChild(d);setTimeout(()=>d.remove(),900);
   }
 
@@ -1821,8 +1828,9 @@
   }
 
   function endGame(){
+    if(state==='done') return;
     clearInterval(ticker);ticker=null;state='done';advancing=false;
-    const tb=Math.round(tLeft*15);score+=tb;
+    const tb=Math.round(tLeft*15);score+=tb;document.getElementById('sd').textContent=score;
     const stars=score>=800?3:score>=500?2:1;
     const ss=[1,2,3].map(i=>`<span class="star ${i<=stars?'son':'sof'}" style="animation-delay:${0.15+i*0.28}s">&#9733;</span>`).join('');
     playSuccess();
@@ -1942,7 +1950,7 @@
       tLeft-=0.05;if(tLeft<=0){tLeft=0;hud();endGame();return;}
       updateFilmStrip();
       if(step===0&&!advancing&&sprayCoverage>=0.97) advanceStep();
-      if(step===4){updateBubbles();if(!advancing&&allStrokesDone())advanceStep();}
+      if(step===4){if(!advancing&&allStrokesDone())advanceStep();}
       hud();if(!sprayRaf)draw();
       }catch(e){console.error('Ticker error:',e.message,e.stack);}
     },50);
@@ -1982,8 +1990,7 @@
     if(step===2) filmPress(px,py);
     if(step===3){cutStarted=true;knifeDragging=true;cutMove(px,py);}
     if(step===4){
-      scraperDown=true;scraperX=px;scraperY=py;
-      scraperPX=px;scraperPY=py;scraperVis=true;
+      scraperDown=true;scraperMove(px,py);scraperPX=scraperX;scraperPY=scraperY;
     }
     setCursor();
   });
@@ -1995,12 +2002,7 @@
     if(step===1) spongeMove(px,py);
     if(step===2) filmMove(px,py);
     if(step===3) cutMove(px,py);
-    if(step===4){
-      const oldX=scraperX,oldY=scraperY;
-      scraperPX=scraperX;scraperPY=scraperY;
-      scraperX=px;scraperY=py;scraperVis=true;
-      if(px!==oldX||py!==oldY) lastScrapeAng=Math.atan2(py-oldY,px-oldX);
-    }
+    if(step===4) scraperMove(px,py);
   });
 
   window.addEventListener('mouseup',()=>{
@@ -2033,8 +2035,7 @@
     else if(step===2) filmPress(px,py);
     else if(step===3){cutStarted=true;knifeDragging=true;cutMove(px,py-CUT_LIFT);}
     else if(step===4){
-      scraperDown=true;scraperVis=true;
-      scraperX=px;scraperY=py;scraperPX=px;scraperPY=py;
+      scraperDown=true;scraperMove(px,py-SQ_LIFT);scraperPX=scraperX;scraperPY=scraperY;
     }
   },{passive:false});
 
@@ -2045,12 +2046,7 @@
     if(step===1) spongeMove(px,py-SPONGE_LIFT);
     if(step===2) filmMove(px,py);
     if(step===3) cutMove(px,py-CUT_LIFT);
-    if(step===4){
-      const oldX4=scraperX,oldY4=scraperY;
-      scraperPX=scraperX;scraperPY=scraperY;
-      scraperX=px;scraperY=py;scraperVis=true;
-      if(px!==oldX4||py!==oldY4) lastScrapeAng=Math.atan2(py-oldY4,px-oldX4);
-    }
+    if(step===4) scraperMove(px,py-SQ_LIFT);
   },{passive:false});
 
   window.addEventListener('touchend',()=>{
