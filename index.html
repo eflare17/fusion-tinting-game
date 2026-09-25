@@ -377,29 +377,78 @@
     return wetCells.size/winCells.size;
   }
 
-  function fireMist(aimX,aimY){
-    const tip = window._nozzleTip || null;
-    const sprayX = tip ? tip.x : aimX;
-    const sprayY = tip ? tip.y : aimY;
-    const fireAng = tip ? tip.ang : Math.atan2(aimY-sprayY, aimX-sprayX)||0;
-    const spreadR = markWet(sprayX, sprayY);
-    sprayCoverage = getSprayCov();
-    pumpAnim = 6;
-    lastAimX = sprayX; lastAimY = sprayY;
-    // Spray cone from nozzle tip
-    for(let i=0;i<25;i++){
-      const spread = (Math.random()-0.5)*0.55;
-      const a = fireAng + spread;
-      const spd = 4+Math.random()*6;
-      mistParticles.push({
-        x: sprayX + Math.cos(fireAng)*6,
-        y: sprayY + Math.sin(fireAng)*6,
-        vx: Math.cos(a)*spd,
-        vy: Math.sin(a)*spd,
-        r: 1.5+Math.random()*3, life:1, decay:0.016+Math.random()*0.014
-      });
+  // ── Spray ──
+  // The spray lands where you point (lifted above your finger on touch screens so you
+  // can see it). The wet glass is painted smoothly on its own layer; the cell grid
+  // underneath still decides the coverage %.
+  const TOUCH_LIFT=60;
+  let wetC=null, dropC=null, sprayRaf=0;
+  const mistSprite=(()=>{
+    const c=document.createElement('canvas');c.width=c.height=32;
+    const x=c.getContext('2d'),g=x.createRadialGradient(16,16,0,16,16,16);
+    g.addColorStop(0,'rgba(185,222,250,0.95)');g.addColorStop(0.45,'rgba(160,205,245,0.45)');g.addColorStop(1,'rgba(150,200,240,0)');
+    x.fillStyle=g;x.fillRect(0,0,32,32);return c;
+  })();
+  function resetWet(){
+    wetC=document.createElement('canvas');wetC.width=W;wetC.height=H;
+    dropC=document.createElement('canvas');dropC.width=W;dropC.height=H;
+  }
+  function paintWet(x,y,r){
+    if(!wetC) resetWet();
+    const c=wetC.getContext('2d');
+    const g=c.createRadialGradient(x,y,0,x,y,r*1.1);
+    g.addColorStop(0,'rgba(110,180,245,0.34)');g.addColorStop(0.7,'rgba(110,180,245,0.24)');g.addColorStop(1,'rgba(95,170,240,0)');
+    c.fillStyle=g;c.beginPath();c.arc(x,y,r*1.1,0,Math.PI*2);c.fill();
+  }
+  function paintDroplet(x,y,r){
+    if(!dropC) resetWet();
+    const c=dropC.getContext('2d');
+    c.fillStyle='rgba(20,45,75,0.22)';
+    c.beginPath();c.arc(x+r*0.12,y+r*0.22,r,0,Math.PI*2);c.fill();
+    c.fillStyle='rgba(205,232,255,0.6)';
+    c.beginPath();c.arc(x,y,r,0,Math.PI*2);c.fill();
+    c.fillStyle='rgba(255,255,255,0.95)';
+    c.beginPath();c.arc(x-r*0.35,y-r*0.35,Math.max(0.6,r*0.32),0,Math.PI*2);c.fill();
+  }
+  function sprayRadius(){
+    const b=polyBounds();return Math.min(b.maxX-b.minX,b.maxY-b.minY)*0.18;
+  }
+  // Called by the pointer handlers: just points the nozzle; sprayFrame() does the spraying
+  function fireMist(aimX,aimY){ bottleAimX=aimX; bottleAimY=aimY; }
+  function sprayFrame(){
+    if(!sprayHeld||advancing||step!==0) return;
+    const ax=bottleAimX, ay=bottleAimY;
+    const r=markWet(ax,ay);
+    sprayCoverage=getSprayCov();
+    if(ptInWinPoly(ax,ay)) paintWet(ax,ay,r);
+    const tip=window._nozzleTip||{x:ax-40,y:ay+70};
+    for(let i=0;i<14;i++){
+      // land somewhere inside the wet circle, more often near the middle
+      const la=Math.random()*Math.PI*2, lr=r*Math.pow(Math.random(),0.7);
+      mistParticles.push({sx:tip.x,sy:tip.y,lx:ax+Math.cos(la)*lr,ly:ay+Math.sin(la)*lr,
+        t:0,dur:7+Math.random()*7,r:3+Math.random()*4,landed:false});
     }
-    return true;
+    if(Math.random()<0.08){
+      const da=Math.random()*Math.PI*2,dr=Math.random()*r*0.8,dx=ax+Math.cos(da)*dr,dy=ay+Math.sin(da)*dr;
+      if(ptInWinPoly(dx,dy)) dripParticles.push({x:dx,y:dy,vx:0,vy:0.5+Math.random()*0.6,life:1,
+        len:5+Math.random()*7,width:1.6+Math.random()*1.4,opacity:0.85});
+    }
+    const now=performance.now();
+    if(now-lastSpraySound>90){lastSpraySound=now;playSpray();}
+    pumpAnim=6;lastAimX=ax;lastAimY=ay;
+  }
+  // Runs every animation frame during the spray step, so the mist and hose move smoothly
+  function sprayLoop(){
+    sprayRaf=0;
+    if(state!=='playing') return;
+    if(step!==0&&!mistParticles.length&&!dripParticles.length) return;
+    if(step===0){
+      if(!hosePoints.length) initHose();
+      // the grip sits below-left of where you're aiming, so the wand points at the spot
+      updateHose(bottleAimX-70,bottleAimY+95);
+    }
+    sprayFrame();updateMist();updateDrips();draw();
+    sprayRaf=requestAnimationFrame(sprayLoop);
   }
 
   function drawKeg(ax, ay){
@@ -443,10 +492,11 @@
     if(hosePoints.length>=2){
       const last=hosePoints[hosePoints.length-1];
       const prev=hosePoints[hosePoints.length-2];
-      const nang=Math.atan2(last.y-prev.y, last.x-prev.x);
-      // Nozzle tip is 50px past the grip in hose direction
-      const tipX = last.x + Math.cos(nang)*80;
-      const tipY = last.y + Math.sin(nang)*80;
+      // Wand points from the grip at the spot being sprayed
+      const nang=Math.atan2(ay-last.y, ax-last.x);
+      const wand=Math.min(55,Math.hypot(ax-last.x,ay-last.y)*0.5);
+      const tipX = last.x + Math.cos(nang)*wand;
+      const tipY = last.y + Math.sin(nang)*wand;
 
       // Draw hose extension from grip to nozzle
       ctx.save();
@@ -474,7 +524,7 @@
       // Nozzle head at tip
       ctx.save();
       ctx.translate(tipX, tipY);
-      ctx.rotate(nang);
+      ctx.rotate(nang-Math.PI/2);
       ctx.fillStyle='#3a4a20';
       ctx.beginPath();ctx.roundRect(-7,-8,14,16,3);ctx.fill();
       ctx.strokeStyle='#5a7a30';ctx.lineWidth=1.5;ctx.stroke();
@@ -527,29 +577,41 @@
     ctx.fillStyle='rgba(255,106,0,0.6)';
     ctx.font="bold 9px 'DM Mono',monospace";
     ctx.textAlign='center';
-    ctx.fillText('drag to spray',KEG_X, KEG_Y+12);
+    ctx.fillText('hold to spray',KEG_X, KEG_Y+12);
   }
 
   function updateDrips(){
     for(let i=dripParticles.length-1;i>=0;i--){
       const d=dripParticles[i];
-      d.vy+=0.06; // gravity
-      d.vx*=0.98;
-      d.x+=d.vx; d.y+=d.vy;
-      d.life-=0.008;
-      // Die if outside window or faded
-      if(d.life<=0||!ptInWinPoly(d.x,d.y+d.len)){
-        dripParticles.splice(i,1);
+      // real drips crawl down the glass in little stop-start runs
+      const oy=d.y;
+      d.y+=d.vy*(0.4+Math.random()*1.2);
+      d.x+=(Math.random()-0.5)*0.5;
+      d.life-=0.006;
+      if(dropC){
+        // the drip sweeps up the beads in its path and leaves a wet streak
+        const c=dropC.getContext('2d');
+        c.save();c.globalCompositeOperation='destination-out';c.lineWidth=d.width*2.2;c.lineCap='round';
+        c.beginPath();c.moveTo(d.x,oy);c.lineTo(d.x,d.y+d.len);c.stroke();c.restore();
+        const w=wetC.getContext('2d');
+        w.strokeStyle='rgba(95,170,240,0.12)';w.lineWidth=d.width*1.6;w.lineCap='round';
+        w.beginPath();w.moveTo(d.x,oy);w.lineTo(d.x,d.y);w.stroke();
       }
+      if(d.life<=0||!ptInWinPoly(d.x,d.y+d.len)) dripParticles.splice(i,1);
     }
-    // Cap drips
-    if(dripParticles.length>60) dripParticles.splice(0,dripParticles.length-60);
+    if(dripParticles.length>40) dripParticles.splice(0,dripParticles.length-40);
   }
 
   function updateMist(){
-    mistParticles=mistParticles.filter(p=>{
-      p.x+=p.vx;p.y+=p.vy;p.vx*=0.9;p.vy*=0.9;p.vy+=0.05;p.life-=p.decay;return p.life>0;
-    });
+    for(const p of mistParticles){
+      p.t++;
+      if(!p.landed&&p.t>=p.dur){
+        p.landed=true;
+        if(Math.random()<0.12&&ptInWinPoly(p.lx,p.ly)) paintDroplet(p.lx,p.ly,0.8+Math.pow(Math.random(),2)*3.2);
+      }
+    }
+    mistParticles=mistParticles.filter(p=>p.t<p.dur+8);
+    if(mistParticles.length>900) mistParticles.splice(0,mistParticles.length-900);
     if(pumpAnim>0) pumpAnim--;
   }
 
@@ -1113,13 +1175,13 @@
       ctx.save();
       ctx.fillStyle='rgba(0,0,0,0.7)';
       ctx.beginPath();ctx.roundRect(b0.minX+8,b0.maxY+4,140,32,8);ctx.fill();
-      ctx.fillStyle=spCov>=100?'#ff6a00':spCov>=85?'#00c4f0':'#e8e4d9';
+      ctx.fillStyle=spCov>=97?'#ff6a00':spCov>=85?'#00c4f0':'#e8e4d9';
       ctx.font="bold 18px 'DM Mono',monospace";
       ctx.textAlign='left';ctx.textBaseline='middle';
       ctx.fillText(spCov+'% covered',b0.minX+16,b0.maxY+20);
       ctx.restore();
       // Skip button at bottom centre
-      if(spCov>=85&&spCov<100&&!advancing){
+      if(spCov>=85&&spCov<97&&!advancing){
         const btnW=180,btnH=42,btnX=(W-btnW)/2,btnY=H-100;
         ctx.save();
         ctx.shadowColor='rgba(240,160,60,0.5)';ctx.shadowBlur=12;
@@ -1133,14 +1195,12 @@
         ctx.restore();
         window._spraySkipBtn={x:btnX,y:btnY,w:btnW,h:btnH};
       } else { window._spraySkipBtn=null; }
-      // Wet cells
-      ctx.save();drawPolyPath(poly);ctx.clip();
-      wetCells.forEach(id=>{
-        const row=Math.floor(id/5000),col=id%5000;
-        ctx.fillStyle='rgba(100,190,255,0.28)';
-        ctx.fillRect(col*CELL,row*CELL,CELL,CELL);
-      });
-      ctx.restore();
+      // Wet glass + beads of water
+      if(wetC){
+        ctx.save();drawPolyPath(poly);ctx.clip();
+        ctx.drawImage(wetC,0,0);ctx.drawImage(dropC,0,0);
+        ctx.restore();
+      }
       // Water drips running down glass
       ctx.save();
       drawPolyPath(poly);ctx.clip();
@@ -1163,24 +1223,38 @@
       });
       ctx.globalAlpha=1;
       ctx.restore();
-      // Mist
-      mistParticles.forEach(p=>{
-        ctx.save();ctx.globalAlpha=p.life*0.7;
-        const g=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,p.r*3);
-        g.addColorStop(0,'rgba(180,230,255,1)');g.addColorStop(1,'rgba(140,200,240,0)');
-        ctx.fillStyle=g;ctx.beginPath();ctx.arc(p.x,p.y,p.r*1.8,0,Math.PI*2);ctx.fill();
-        ctx.restore();
-      });
-      // Pump anim — crosshair at last aim
-      if(pumpAnim>0&&lastAimX){
-        ctx.save();ctx.globalAlpha=pumpAnim/6;
-        ctx.strokeStyle='#ff6a00';ctx.lineWidth=1.5;
-        ctx.beginPath();ctx.arc(lastAimX,lastAimY,30,0,Math.PI*2);ctx.stroke();
-        ctx.beginPath();ctx.moveTo(lastAimX-18,lastAimY);ctx.lineTo(lastAimX+18,lastAimY);ctx.stroke();
-        ctx.beginPath();ctx.moveTo(lastAimX,lastAimY-18);ctx.lineTo(lastAimX,lastAimY+18);ctx.stroke();
-        ctx.restore();
+      // Spray fan from the nozzle to the spot being sprayed
+      const tip=window._nozzleTip;
+      if(sprayHeld&&tip){
+        const r=sprayRadius(),dx=lastAimX-tip.x,dy=lastAimY-tip.y,d=Math.hypot(dx,dy)||1;
+        const nx=-dy/d*r*0.9,ny=dx/d*r*0.9;
+        const g=ctx.createLinearGradient(tip.x,tip.y,lastAimX,lastAimY);
+        g.addColorStop(0,'rgba(200,230,255,0.45)');g.addColorStop(1,'rgba(200,230,255,0.04)');
+        ctx.save();ctx.fillStyle=g;ctx.beginPath();
+        ctx.moveTo(tip.x,tip.y);ctx.lineTo(lastAimX+nx,lastAimY+ny);ctx.lineTo(lastAimX-nx,lastAimY-ny);ctx.closePath();
+        ctx.fill();ctx.restore();
       }
-
+      // Mist: fine droplets flying from the nozzle and spreading out as they land
+      ctx.save();
+      for(const p of mistParticles){
+        const k=Math.min(1,p.t/p.dur),e=1-(1-k)*(1-k);
+        const x=p.sx+(p.lx-p.sx)*e,y=p.sy+(p.ly-p.sy)*e;
+        const size=p.r*(0.5+1.3*e);
+        ctx.globalAlpha=p.landed?Math.max(0,0.5*(1-(p.t-p.dur)/8)):0.25+0.45*e;
+        ctx.drawImage(mistSprite,x-size,y-size,size*2,size*2);
+      }
+      ctx.restore();
+      // Aim ring: shows where (and how wide) the spray will land
+      if(lastAimX||bottleAimX){
+        const ax=sprayHeld?lastAimX:bottleAimX,ay=sprayHeld?lastAimY:bottleAimY;
+        if(ax>0&&ay>0){
+          ctx.save();ctx.globalAlpha=sprayHeld?0.75:0.4;
+          ctx.strokeStyle='#ff6a00';ctx.lineWidth=1.5;ctx.setLineDash([5,5]);
+          ctx.beginPath();ctx.arc(ax,ay,sprayRadius()*0.9,0,Math.PI*2);ctx.stroke();
+          ctx.setLineDash([]);ctx.beginPath();ctx.arc(ax,ay,2.5,0,Math.PI*2);ctx.fillStyle='#ff6a00';ctx.fill();
+          ctx.restore();
+        }
+      }
     }
 
     // ── STEP 1: film ──
@@ -1682,7 +1756,7 @@
   function startGame(){
     console.log('startGame called');
     state='playing';step=0;score=0;tLeft=40;advancing=false;
-    sprayCoverage=0;wetCells=new Set();mistParticles=[];dripParticles=[];initHose();spraySkipped=false;spongeSkipped=false;
+    sprayCoverage=0;wetCells=new Set();mistParticles=[];dripParticles=[];initHose();resetWet();sprayHeld=false;spraySkipped=false;spongeSkipped=false;
     filmPlaced=false;filmDragging=false;
     cutProgress=0;cutStarted=false;knifeVis=false;knifeDragging=false;cutOffPath=false;cutsDone=false;filmStrip=null;
     bubbles=[];scrapeCells=new Set();scraperVis=false;scraperDown=false;initStrokes();
@@ -1691,20 +1765,15 @@
     tintC=document.createElement('canvas');
     buildWinCells();initFilm();
     ov.style.display='none';hud();clearInterval(ticker);
+    if(!sprayRaf) sprayRaf=requestAnimationFrame(sprayLoop);
     ga.querySelectorAll('canvas:not(#gc)').forEach(c=>c.remove());
     ticker=setInterval(()=>{
       try{
       tLeft-=0.05;if(tLeft<=0){tLeft=0;hud();endGame();return;}
-      updateMist();
-      if(step===0) updateDrips();
       updateFilmStrip();
-      if(step===0&&hosePoints.length){
-        updateHose(bottleAimX,bottleAimY);
-        if(sprayHeld) fireMist(bottleAimX,bottleAimY);
-      }
-      if(step===0&&!advancing&&sprayCoverage>=1.0) advanceStep();
+      if(step===0&&!advancing&&sprayCoverage>=0.97) advanceStep();
       if(step===4){updateBubbles();if(!advancing&&allStrokesDone())advanceStep();}
-      hud();draw();
+      hud();if(!sprayRaf)draw();
       }catch(e){console.error('Ticker error:',e.message,e.stack);}
     },50);
   }
@@ -1755,7 +1824,7 @@
   window.addEventListener('mousemove',e=>{
     if(state!=='playing'||advancing) return;
     const[px,py]=getXY(e);
-    if(step===0){bottleAimX=px;bottleAimY=py;if(sprayHeld)fireMist(px,py);}
+    if(step===0){fireMist(px,py);}
     if(step===1){
       spongeVX=px-spongePX; spongeVY=py-spongePY;
       spongeSpeed=Math.sqrt(spongeVX*spongeVX+spongeVY*spongeVY);
@@ -1804,7 +1873,7 @@
         spongeSkipped=true;score=Math.max(0,score-100);advanceStep();return;
       }
     }
-    if(step===0){sprayHeld=true;bottleAimX=px;bottleAimY=py;fireMist(px,py);}
+    if(step===0){sprayHeld=true;fireMist(px,py-TOUCH_LIFT);}
 
     else if(step===1){spongeDown=true;spongeVis=true;}
     else if(step===2&&!filmPlaced){
@@ -1821,7 +1890,7 @@
   window.addEventListener('touchmove',e=>{
     if(state!=='playing'||advancing) return;e.preventDefault();
     const[px,py]=getXY(e);
-    if(step===0){bottleAimX=px;bottleAimY=py;if(sprayHeld)fireMist(px,py);}
+    if(step===0){fireMist(px,py-TOUCH_LIFT);}
     if(step===1){
       spongeVX=px-spongePX; spongeVY=py-spongePY;
       spongeSpeed=Math.sqrt(spongeVX*spongeVX+spongeVY*spongeVY);
@@ -1860,6 +1929,12 @@
     imgOffY=(H-CROP.h*imgScale)/2;
     buildBackdrop();
     buildWinCells();
+    if(state==='playing'&&step===0){
+      resetWet();
+      const c=wetC.getContext('2d');c.fillStyle='rgba(95,170,240,0.35)';
+      wetCells.forEach(id=>{const row=Math.floor(id/5000),col=id%5000;
+        c.beginPath();c.arc(col*CELL+CELL/2,row*CELL+CELL/2,CELL*0.9,0,Math.PI*2);c.fill();});
+    }
     buildSpongeWinCells();
     buildScrapeWinCells();
     initHose();
