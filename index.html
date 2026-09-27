@@ -1803,6 +1803,15 @@
       </div>`).join('');
   }
 
+  // Prize link for the website's Car Booker: T20-<time>-<check>. The booker recomputes the
+  // check, and only honours links less than 30 days old. (Must match the booker's code.)
+  function rewardToken(amount){
+    const t=Date.now().toString(36);
+    let h=0;const str=amount+t+'fusion-tint-game';
+    for(let i=0;i<str.length;i++) h=(h*31+str.charCodeAt(i))%1679616;
+    return 'T'+amount+'-'+t+'-'+h.toString(36);
+  }
+
   function confetti(){
     const c=document.createElement('canvas');
     c.style.cssText='position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:25';
@@ -1847,8 +1856,9 @@
     const REWARD=stars===3?{off:'$20',code:'TINT20'}:stars===2?{off:'$10',code:'TINT10'}:null;
     const ss=[1,2,3].map(i=>`<span class="star ${i<=stars?'son':'sof'}" style="animation-delay:${0.15+i*0.28}s">&#9733;</span>`).join('');
     playSuccess();
-    // Online booking is being moved to a new page. Until it's live, winners call or text to book.
-    // When it is, put its address here and the button becomes "Book now" again.
+    // Online booking: the Car Booker on the website reads ?reward=... and applies the prize
+    // itself, so winners don't type a code. Leave BOOK_URL empty until that page is live on
+    // the real domain; until then winners call or text to book.
     const BOOK_URL='';
     const PHONE='0488846848', PHONE_SHOWN='0488 846 848';
     const msg = stars===3 ? 'Flawless — that window is mint!' :
@@ -1862,8 +1872,8 @@
           <button class="copy-btn" id="copy-code">COPY CODE</button>
         </div>
         ${BOOK_URL
-          ? `<a class="book-btn" href="${BOOK_URL}" target="_blank" rel="noopener">BOOK NOW &amp; SAVE ${REWARD.off} →</a>
-             <div class="win-note">Enter the code when you book</div>`
+          ? `<a class="book-btn" href="${BOOK_URL}${BOOK_URL.indexOf('?')<0?'?':'&'}reward=${rewardToken(REWARD.off==='$20'?20:10)}" target="_blank" rel="noopener">BOOK NOW · ${REWARD.off} OFF APPLIED →</a>
+             <div class="win-note">No code needed online · booking by phone? Mention ${REWARD.code} · <a href="tel:${PHONE}" style="color:#ff6a00">${PHONE_SHOWN}</a></div>`
           : `<a class="book-btn" href="tel:${PHONE}">📞 CALL TO BOOK · ${PHONE_SHOWN}</a>
              <div class="win-note">Mention code ${REWARD.code} · or <a href="sms:${PHONE}?body=${encodeURIComponent(`Hi! I got ${stars} stars on the tint game - code ${REWARD.code} for ${REWARD.off} off. Keen to book a tint.`)}" style="color:#ff6a00">text us</a></div>`}
       </div>` : '';
